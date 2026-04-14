@@ -131,15 +131,17 @@ const matchPayload = async (payload) => {
   const rasterWidth = Math.max(1, Math.round(width))
   const rasterHeight = Math.max(1, Math.round(height))
 
-  postMessage({ type: 'progress', id: payload.id, progress: 0.08, phase: 'cell_sampling_a' })
+  postMessage({ type: 'progress', id: payload.id, progress: 0, phase: 'cell_sampling_a' })
   const sourceGrid = collectGridCells(source, rasterWidth, rasterHeight, resolution)
+  postMessage({ type: 'progress', id: payload.id, progress: 1, phase: 'cell_sampling_a' })
 
-  postMessage({ type: 'progress', id: payload.id, progress: 0.16, phase: 'cell_sampling_b' })
+  postMessage({ type: 'progress', id: payload.id, progress: 0, phase: 'cell_sampling_b' })
   const targetGrid = collectGridCells(target, rasterWidth, rasterHeight, resolution)
+  postMessage({ type: 'progress', id: payload.id, progress: 1, phase: 'cell_sampling_b' })
 
   const targetWeightInfo = computeTargetWeights(targetGrid.colors, resolution)
 
-  postMessage({ type: 'progress', id: payload.id, progress: 0.22, phase: 'assignment' })
+  postMessage({ type: 'progress', id: payload.id, progress: 0, phase: 'assignment' })
   const assignment = await computeAssignmentsWasm(
     sourceGrid.colors,
     targetGrid.colors,
@@ -148,7 +150,7 @@ const matchPayload = async (payload) => {
     proximityFactor,
   )
 
-  postMessage({ type: 'progress', id: payload.id, progress: 0.68, phase: 'assignment' })
+  postMessage({ type: 'progress', id: payload.id, progress: 1, phase: 'assignment' })
 
   const targetPositions = new Float32Array(sourceGrid.count * 2)
 
@@ -161,7 +163,7 @@ const matchPayload = async (payload) => {
     targetPositions[sourceBase + 1] = targetGrid.centers[targetBase + 1]
   }
 
-  postMessage({ type: 'progress', id: payload.id, progress: 0.7, phase: 'simulation' })
+  postMessage({ type: 'progress', id: payload.id, progress: 0, phase: 'simulation' })
   const motionPath = await simulateMotionWasm(
     sourceGrid.centers,
     targetPositions,
@@ -171,7 +173,7 @@ const matchPayload = async (payload) => {
     simulationFrames,
   )
 
-  postMessage({ type: 'progress', id: payload.id, progress: 0.98, phase: 'simulation' })
+  postMessage({ type: 'progress', id: payload.id, progress: 1, phase: 'simulation' })
 
   return {
     grid: {

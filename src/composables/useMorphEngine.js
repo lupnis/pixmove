@@ -354,25 +354,28 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
     safeMaxPercent,
   )
 
-  onProgress?.('loading', 0.06)
+  onProgress?.('loading', 0)
   const [sourceImage, targetImage] = await Promise.all([
     decodeImage(sourceUrl),
     decodeImage(targetUrl),
   ])
   ensureNotAborted()
+  onProgress?.('loading', 1)
 
-  onProgress?.('rasterizing_a', 0.16)
+  onProgress?.('rasterizing_a', 0)
   const sourceRaster = rasterizeImage(sourceImage, width, height)
   ensureNotAborted()
+  onProgress?.('rasterizing_a', 1)
 
-  onProgress?.('rasterizing_b', 0.24)
+  onProgress?.('rasterizing_b', 0)
   const targetRaster = rasterizeImage(targetImage, width, height)
   ensureNotAborted()
+  onProgress?.('rasterizing_b', 1)
 
   const sourceAverage = averageColor(sourceRaster.pixels)
   const targetAverage = averageColor(targetRaster.pixels)
 
-  onProgress?.('matching_worker', 0.3)
+  onProgress?.('matching_worker', 0)
   const workerResult = await runMatchingWorker(
     {
       sourcePixels: sourceRaster.pixels.buffer,
@@ -390,6 +393,7 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
   )
 
   ensureNotAborted()
+  onProgress?.('matching_worker', 1)
 
   onProgress?.('done', 1)
 

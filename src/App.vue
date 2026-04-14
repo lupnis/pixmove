@@ -574,6 +574,7 @@ let sourceResolutionTaskId = 0
 let targetResolutionTaskId = 0
 let generatePulseTimer = null
 let lastGenerateProgress = 0
+let lastGeneratePhase = ''
 let paneResizeSession = null
 let generateAbortController = null
 let exportAbortController = null
@@ -988,12 +989,13 @@ const startGeneratePulse = () => {
 
   generatePulseTimer = setInterval(() => {
     if (!busy.value || !isGenerating.value) return
+    if (lastGeneratePhase === 'done') return
 
-    const cap = 97
+    const cap = 96
     if (pipelineProgress.value >= cap) return
 
     const next = clamp(
-      pipelineProgress.value + Math.max(0.12, (cap - pipelineProgress.value) * 0.045),
+      pipelineProgress.value + Math.max(0.12, (cap - pipelineProgress.value) * 0.038),
       0,
       cap,
     )
@@ -1145,20 +1147,8 @@ const flushUiFrame = async () => {
   })
 }
 
-const mapGenerateProgress = (phase, rawProgress) => {
-  const p = clamp(Number(rawProgress) || 0, 0, 1)
-
-  if (phase === 'loading') return 4 + p * 8
-  if (phase === 'rasterizing_a') return 12 + p * 8
-  if (phase === 'rasterizing_b') return 20 + p * 8
-  if (phase === 'matching_worker') return 28 + p * 6
-  if (phase === 'cell_sampling_a') return 34 + p * 8
-  if (phase === 'cell_sampling_b') return 42 + p * 8
-  if (phase === 'assignment') return 50 + p * 26
-  if (phase === 'simulation') return 76 + p * 22
-  if (phase === 'done') return 100
-
-  return p * 100
+const mapGenerateProgress = (rawProgress) => {
+  return clamp((Number(rawProgress) || 0) * 100, 0, 100)
 }
 
 const addToHistory = async (newMorphData) => {
@@ -1239,6 +1229,7 @@ const generateMorph = async () => {
   busy.value = true
   isGenerating.value = true
   lastGenerateProgress = 0
+  lastGeneratePhase = ''
   setPipelineProgress(0)
   startGeneratePulse()
   stopTimeline()
@@ -1246,7 +1237,7 @@ const generateMorph = async () => {
   syncMorphProgress()
 
   try {
-    setStatus(i18nText('workflow.processingStart'), i18nText('statusBar.processing'), 3, {
+    setStatus(i18nText('workflow.processingStart'), i18nText('statusBar.processing'), 0, {
       smoothProgress: true,
       duration: 160,
     })
@@ -1269,17 +1260,26 @@ const generateMorph = async () => {
           done: t('workflow.phase.done'),
         }
 
+        const phaseLabel = phaseTextMap[phase] || phase
+        const nextProgress = mapGenerateProgress(p)
+
+        if (phase !== lastGeneratePhase) {
+          lastGeneratePhase = phase
+          lastGenerateProgress = 0
+          setPipelineProgress(0)
+        }
+
         setStatus(
-          t('workflow.processingPrefix', { phase: phaseTextMap[phase] || phase }),
-          t('statusBar.processing'),
-          Math.max(lastGenerateProgress, mapGenerateProgress(phase, p)),
+          t('workflow.processingPrefix', { phase: phaseLabel }),
+          phaseLabel,
+          Math.max(lastGenerateProgress, nextProgress),
           {
             smoothProgress: true,
             duration: 180,
           },
         )
 
-        lastGenerateProgress = Math.max(lastGenerateProgress, mapGenerateProgress(phase, p))
+        lastGenerateProgress = Math.max(lastGenerateProgress, nextProgress)
       },
     })
 
@@ -1322,6 +1322,7 @@ const generateMorph = async () => {
     }
   } finally {
     stopGeneratePulse()
+    lastGeneratePhase = ''
     if (generateAbortController === abortController) {
       generateAbortController = null
     }
