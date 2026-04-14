@@ -1,0 +1,26 @@
+{
+  "name": "pixmove",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "wasm:build": "node scripts/build-wasm.mjs",
+    "predev": "npm run wasm:build",
+    "prebuild": "npm run wasm:build",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "animejs": "^4.3.6",
+    "gifenc": "^1.0.3",
+    "pixi.js": "^8.17.1",
+    "vue": "^3.5.32",
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.5",
+    "assemblyscript": "^0.28.14",
+    "vite": "^8.0.4"
+  }
+}

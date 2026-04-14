@@ -1,0 +1,49 @@
+name: Usage Question
+description: Ask for help with setup, usage, or expected behavior
+title: "[Question] "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reaching out.
+        For bug-like problems, please prefer the Bug Report template.
+        感谢反馈。
+        如果是可复现缺陷，请优先使用 Bug Report 模板。
+  - type: textarea
+    id: question
+    attributes:
+      label: Question / 问题描述
+      description: What do you want to know?
+      placeholder: I want to understand how to...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context / 背景信息
+      description: Share your goal, what you tried, and what blocked you.
+      placeholder: I tried X and Y, but...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Project Version / 项目版本
+      placeholder: main branch / commit hash / release tag
+  - type: input
+    id: browser
+    attributes:
+      label: Browser / 浏览器
+      placeholder: Chrome 136, Edge 136, Safari 18...
+  - type: input
+    id: os
+    attributes:
+      label: OS / 操作系统
+      placeholder: Windows 11, macOS 15, Ubuntu 24.04...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or Screenshots / 日志或截图
+      description: Paste useful logs or add screenshots if relevant.

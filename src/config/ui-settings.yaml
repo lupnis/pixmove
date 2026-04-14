@@ -1,0 +1,113 @@
+appearance:
+  defaultThemeMode: system
+  defaultComponentTone: blue
+  defaultLanguageMode: browser
+
+  # Theme mode options shown in the settings dialog.
+  themeModes:
+    - value: light
+      label: 亮色
+      i18n:
+        zh-CN: 亮色
+        zh-TW: 亮色
+        en: Light
+        fr: Clair
+    - value: dark
+      label: 暗色
+      i18n:
+        zh-CN: 暗色
+        zh-TW: 暗色
+        en: Dark
+        fr: Sombre
+    - value: system
+      label: 跟随系统
+      i18n:
+        zh-CN: 跟随系统
+        zh-TW: 跟隨系統
+        en: Follow System
+        fr: Suivre le systeme
+
+  # Language mode options shown in the settings dialog.
+  # Keep 'browser' to follow navigator language.
+  languageModes:
+    - value: browser
+      label: Follow Browser
+    - value: zh-CN
+      label: 简体中文
+    - value: zh-TW
+      label: 繁體中文
+    - value: en
+      label: English
+    - value: fr
+      label: Francais
+
+  # Component tone presets shown as color dots.
+  # You can add/remove items here without touching App.vue.
+  componentTones:
+    - value: blue
+      label: 湖蓝
+      i18n:
+        zh-CN: 湖蓝
+        zh-TW: 湖藍
+        en: Lake Blue
+        fr: Bleu lac
+      dot: '#3b82f6'
+      palette:
+        accent: '#3b82f6'
+        accentStrong: '#265ec3'
+        accentSoft: 'rgba(59, 130, 246, 0.16)'
+        accentBorder: 'rgba(59, 130, 246, 0.45)'
+        scrollbarTrack: 'rgba(59, 130, 246, 0.34)'
+        scrollbarThumb: 'rgba(59, 130, 246, 0.76)'
+        scrollbarThumbHover: '#265ec3'
+
+    - value: teal
+      label: 海盐青
+      i18n:
+        zh-CN: 海盐青
+        zh-TW: 海鹽青
+        en: Teal
+        fr: Sarcelle
+      dot: '#2d9f8f'
+      palette:
+        accent: '#2d9f8f'
+        accentStrong: '#257a6f'
+        accentSoft: 'rgba(45, 159, 143, 0.16)'
+        accentBorder: 'rgba(45, 159, 143, 0.45)'
+        scrollbarTrack: 'rgba(45, 159, 143, 0.34)'
+        scrollbarThumb: 'rgba(45, 159, 143, 0.76)'
+        scrollbarThumbHover: '#257a6f'
+
+    - value: orange
+      label: 暖橙
+      i18n:
+        zh-CN: 暖橙
+        zh-TW: 暖橙
+        en: Warm Orange
+        fr: Orange chaud
+      dot: '#e58a45'
+      palette:
+        accent: '#e58a45'
+        accentStrong: '#cb6f2d'
+        accentSoft: 'rgba(229, 138, 69, 0.16)'
+        accentBorder: 'rgba(229, 138, 69, 0.45)'
+        scrollbarTrack: 'rgba(229, 138, 69, 0.34)'
+        scrollbarThumb: 'rgba(229, 138, 69, 0.76)'
+        scrollbarThumbHover: '#cb6f2d'
+
+    - value: rose
+      label: 莓红
+      i18n:
+        zh-CN: 莓红
+        zh-TW: 莓紅
+        en: Berry Rose
+        fr: Rose baie
+      dot: '#cf5b86'
+      palette:
+        accent: '#cf5b86'
+        accentStrong: '#a33f66'
+        accentSoft: 'rgba(207, 91, 134, 0.16)'
+        accentBorder: 'rgba(207, 91, 134, 0.45)'
+        scrollbarTrack: 'rgba(207, 91, 134, 0.34)'
+        scrollbarThumb: 'rgba(207, 91, 134, 0.76)'
+        scrollbarThumbHover: '#a33f66'
