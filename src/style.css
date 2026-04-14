@@ -781,10 +781,10 @@ body.is-layout-resizing * {
 
 .settings-dialog {
   --settings-space: 1.5em;
-  --settings-dialog-default-width: 640px;
-  --settings-dialog-default-height: 560px;
-  --settings-dialog-max-width: calc(100vw - 24px);
-  --settings-dialog-max-height: calc(100vh - 28px);
+  --settings-dialog-default-width: 760px;
+  --settings-dialog-default-height: 620px;
+  --settings-dialog-max-width: calc(100vw - 32px);
+  --settings-dialog-max-height: calc(100vh - 36px);
 
   width: min(var(--settings-dialog-default-width), var(--settings-dialog-max-width));
   height: min(var(--settings-dialog-default-height), var(--settings-dialog-max-height));
@@ -812,8 +812,10 @@ body.is-layout-resizing * {
 }
 
 .settings-content-shell {
+  width: 100%;
   min-height: 100%;
   height: 100%;
+  min-width: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   opacity: 0;
@@ -875,13 +877,16 @@ body.is-layout-resizing * {
 }
 
 .settings-body {
+  min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr);
+  grid-template-columns: minmax(170px, 220px) minmax(0, 1fr);
   overflow: hidden;
+  scrollbar-gutter: auto;
 }
 
 .settings-tabs {
+  min-width: 0;
   border-right: 1px solid var(--line-soft);
   padding: var(--settings-space) 0 var(--settings-space) var(--settings-space);
   display: grid;
@@ -890,6 +895,7 @@ body.is-layout-resizing * {
   background: color-mix(in srgb, var(--bg-panel-soft) 92%, transparent);
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-gutter: auto;
 }
 
 .settings-tab {
@@ -922,18 +928,21 @@ body.is-layout-resizing * {
 }
 
 .settings-panel {
+  min-width: 0;
+  min-height: 0;
   padding: var(--settings-space);
   display: grid;
   gap: var(--settings-space);
   align-content: start;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-gutter: auto;
 }
 
 .settings-field {
   display: grid;
   gap: 8px;
-  max-width: 320px;
+  max-width: min(100%, 440px);
   color: var(--text-main);
 }
 
@@ -1027,7 +1036,8 @@ body.is-layout-resizing * {
 }
 
 .about-panel {
-  max-width: 420px;
+  width: 100%;
+  max-width: none;
   display: grid;
   gap: var(--settings-space);
   align-content: start;
@@ -1093,10 +1103,59 @@ body.is-layout-resizing * {
 }
 
 .cache-panel {
-  max-width: 520px;
+  width: 100%;
+  max-width: none;
   display: grid;
   gap: var(--settings-space);
   align-content: start;
+}
+
+@media (max-width: 960px) {
+  .settings-dialog {
+    --settings-dialog-default-width: calc(100vw - 20px);
+    --settings-dialog-default-height: calc(100vh - 20px);
+  }
+
+  .settings-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-tabs {
+    border-right: none;
+    border-bottom: 1px solid var(--line-soft);
+    padding: 12px;
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    align-items: center;
+  }
+
+  .settings-tab {
+    flex: 0 0 auto;
+    min-width: 98px;
+    border-right: 1px solid transparent;
+    border-radius: 8px;
+    margin-right: 0;
+    padding: 8px 10px;
+    text-align: center;
+  }
+
+  .settings-tab.active {
+    border-left-color: transparent;
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  .settings-panel {
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .settings-actions {
+    padding: 14px;
+    gap: 10px;
+  }
 }
 
 .cache-panel h3 {
