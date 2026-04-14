@@ -186,6 +186,9 @@ const measureBytes = (value) => {
   return text.length * 2
 }
 
+const measureStringBytesFast = (value) =>
+  typeof value === 'string' ? value.length * 2 : measureBytes(value)
+
 const formatBytes = (bytes) => {
   const value = Math.max(0, Number(bytes) || 0)
 
@@ -252,20 +255,103 @@ const cacheStats = ref({
 const cacheStatsLoading = ref(false)
 let cacheStatsTaskId = 0
 
-const buildCacheStats = () => {
+const CACHE_STATS_BATCH_SIZE = 2
+
+const yieldToMainThread = () =>
+  new Promise((resolve) => {
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(() => resolve(), { timeout: 24 })
+      return
+    }
+
+    setTimeout(resolve, 0)
+  })
+
+const isTypedArrayLike = (value) =>
+  ArrayBuffer.isView(value)
+
+const getBinaryByteLength = (value) => {
+  if (value == null) return 0
+
+  if (isTypedArrayLike(value)) {
+    return Number(value.byteLength) || 0
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return Number(value.byteLength) || 0
+  }
+
+  return 0
+}
+
+const estimateMorphDataBytes = (morphData) => {
+  if (!morphData || typeof morphData !== 'object') return 0
+
+  let bytes = 0
+
+  bytes += measureStringBytesFast(morphData.sourceRasterUrl)
+  bytes += measureStringBytesFast(morphData.targetRasterUrl)
+  bytes += measureBytes({
+    width: morphData.width,
+    height: morphData.height,
+    createdAt: morphData.createdAt,
+    sourceAverage: morphData.sourceAverage,
+    targetAverage: morphData.targetAverage,
+    meta: morphData.meta,
+  })
+
+  const grid = morphData.grid
+
+  if (grid && typeof grid === 'object') {
+    bytes += measureBytes({
+      side: grid.side,
+      count: grid.count,
+      frameCount: grid.frameCount,
+    })
+
+    bytes += getBinaryByteLength(grid.cellBounds)
+    bytes += getBinaryByteLength(grid.sourceColors)
+    bytes += getBinaryByteLength(grid.targetColors)
+    bytes += getBinaryByteLength(grid.targetToSource)
+    bytes += getBinaryByteLength(grid.sourceToTarget)
+    bytes += getBinaryByteLength(grid.sourcePositions)
+    bytes += getBinaryByteLength(grid.targetPositions)
+    bytes += getBinaryByteLength(grid.motionPath)
+  }
+
+  return bytes
+}
+
+const cancelCacheStatsRefresh = () => {
+  cacheStatsTaskId += 1
+  cacheStatsLoading.value = false
+}
+
+const isCacheStatsTaskActive = (taskId) =>
+  taskId === cacheStatsTaskId
+  && settingsOpen.value
+  && settingsActiveTab.value === 'cache'
+
+const buildCacheStats = async (taskId) => {
+  const items = [...historyItems.value]
+
   let sourceBytes = 0
   let targetBytes = 0
   let thumbnailBytes = 0
   let morphBytes = 0
   let metadataBytes = 0
 
-  for (const item of historyItems.value) {
-    const fullRecordBytes = measureBytes(item)
-    sourceBytes += measureBytes(item.sourceUrl)
-    targetBytes += measureBytes(item.targetUrl)
-    thumbnailBytes += measureBytes(item.thumbnail)
+  for (let index = 0; index < items.length; index += 1) {
+    if (!isCacheStatsTaskActive(taskId)) return null
 
-    const itemMetadataBytes = measureBytes({
+    const item = items[index]
+
+    sourceBytes += measureStringBytesFast(item.sourceUrl)
+    targetBytes += measureStringBytesFast(item.targetUrl)
+    thumbnailBytes += measureStringBytesFast(item.thumbnail)
+    morphBytes += estimateMorphDataBytes(item.morphData)
+
+    metadataBytes += measureBytes({
       id: item.id,
       createdAt: item.createdAt,
       sourceName: item.sourceName,
@@ -278,12 +364,12 @@ const buildCacheStats = () => {
       exportSettings: item.exportSettings,
     })
 
-    metadataBytes += itemMetadataBytes
-    morphBytes += Math.max(
-      0,
-      fullRecordBytes - measureBytes(item.sourceUrl) - measureBytes(item.targetUrl) - measureBytes(item.thumbnail) - itemMetadataBytes,
-    )
+    if ((index + 1) % CACHE_STATS_BATCH_SIZE === 0) {
+      await yieldToMainThread()
+    }
   }
+
+  if (!isCacheStatsTaskActive(taskId)) return null
 
   const prefsBytes = measureBytes({
     selectedTemplateId: selectedTemplateId.value,
@@ -354,7 +440,7 @@ const buildCacheStats = () => {
     totalBytes,
     totalReadable: formatBytes(totalBytes),
     segments,
-    recordCount: historyItems.value.length,
+    recordCount: items.length,
   }
 }
 
@@ -363,16 +449,15 @@ const refreshCacheStats = async () => {
   cacheStatsLoading.value = true
 
   await nextTick()
-  await new Promise((resolve) => {
-    setTimeout(resolve, 0)
-  })
 
-  if (taskId !== cacheStatsTaskId) return
-
-  cacheStats.value = buildCacheStats()
-
-  if (taskId === cacheStatsTaskId) {
-    cacheStatsLoading.value = false
+  try {
+    const nextStats = await buildCacheStats(taskId)
+    if (!nextStats || taskId !== cacheStatsTaskId) return
+    cacheStats.value = nextStats
+  } finally {
+    if (taskId === cacheStatsTaskId) {
+      cacheStatsLoading.value = false
+    }
   }
 }
 
@@ -407,7 +492,11 @@ const cacheStatsRefreshFingerprint = computed(() => [
 watch(
   [settingsOpen, settingsActiveTab, cacheStatsRefreshFingerprint],
   ([open, tab]) => {
-    if (!open || tab !== 'cache') return
+    if (!open || tab !== 'cache') {
+      cancelCacheStatsRefresh()
+      return
+    }
+
     refreshCacheStats()
   }
 )
@@ -1684,6 +1773,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  cancelCacheStatsRefresh()
   generateAbortController?.abort()
   exportAbortController?.abort()
   stopTimeline()
