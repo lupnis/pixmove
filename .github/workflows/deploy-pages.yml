@@ -25,19 +25,29 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure Pages
+        id: pages
         uses: actions/configure-pages@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24.14.1
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
       - name: Build site
-        run: npm run build
+        shell: bash
+        run: |
+          BASE_PATH='${{ steps.pages.outputs.base_path }}'
+          if [ -z "$BASE_PATH" ] || [ "$BASE_PATH" = "/" ]; then
+            BASE_PATH='/'
+          else
+            BASE_PATH="${BASE_PATH%/}/"
+          fi
+          echo "Building with Vite base path: $BASE_PATH"
+          npm run build -- --base "$BASE_PATH"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
