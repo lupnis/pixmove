@@ -44,7 +44,7 @@ const titleArrow = (item) =>
 
 const formatHistoryTimestamp = (value) => formatTimestamp(value, locale.value)
 
-const isRecordLocked = (item) => Boolean(item?.isDeleting || item?.isExiting)
+const isRecordLocked = (item) => Boolean(item?.isDeleting || item?.isExiting || item?.isHydrating)
 
 const requestReplay = (item) => {
   if (isRecordLocked(item)) return
@@ -206,6 +206,7 @@ onBeforeUnmount(() => {
                 active: item.id === props.activeId,
                 deleting: item.isDeleting,
                 exiting: item.isExiting,
+                hydrating: item.isHydrating,
                 locked: isRecordLocked(item),
               }"
               role="button"
@@ -241,9 +242,9 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <div v-if="item.isDeleting" class="record-delete-mask" aria-hidden="true">
+              <div v-if="item.isDeleting || item.isHydrating" class="record-delete-mask" aria-hidden="true">
                 <span class="delete-spinner" />
-                <span>{{ t('history.delete') }}</span>
+                <span>{{ item.isDeleting ? t('history.delete') : t('app.loadingHistory') }}</span>
               </div>
             </article>
           </template>
@@ -564,8 +565,14 @@ onBeforeUnmount(() => {
   border-color: color-mix(in srgb, var(--accent-border) 56%, var(--line-soft));
 }
 
+.record.hydrating {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line-soft));
+}
+
 .record.deleting .thumb,
-.record.deleting .info {
+.record.deleting .info,
+.record.hydrating .thumb,
+.record.hydrating .info {
   opacity: 0.42;
 }
 

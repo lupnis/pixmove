@@ -20,7 +20,8 @@ import {
 import {
   clearHistoryRecords,
   deleteHistoryRecord,
-  loadHistoryRecords,
+  loadHistoryRecord,
+  loadHistorySummaries,
   loadUiPrefs,
   pruneHistory,
   saveHistoryRecord,
@@ -358,10 +359,10 @@ const buildCacheStats = async (taskId) => {
 
     const item = items[index]
 
-    sourceBytes += measureStringBytesFast(item.sourceUrl)
-    targetBytes += measureStringBytesFast(item.targetUrl)
-    thumbnailBytes += measureStringBytesFast(item.thumbnail)
-    morphBytes += estimateMorphDataBytes(item.morphData)
+    sourceBytes += Number(item.sourceUrlBytes) || measureStringBytesFast(item.sourceUrl)
+    targetBytes += Number(item.targetUrlBytes) || measureStringBytesFast(item.targetUrl)
+    thumbnailBytes += Number(item.thumbnailBytes) || measureStringBytesFast(item.thumbnail)
+    morphBytes += Number(item.morphDataBytes) || estimateMorphDataBytes(item.morphData)
 
     metadataBytes += measureBytes({
       id: item.id,
@@ -596,6 +597,7 @@ let settingsDialogTimer = null
 let settingsContentTimer = null
 let settingsUnmountTimer = null
 const historyRemoveTimers = new Map()
+const historyDetailTasks = new Map()
 let generateProgressTimer = null
 let generatePhaseEstimate = null
 let generateWorkload = null
@@ -1256,14 +1258,30 @@ const detailToMorphOptions = (density) => {
   }
 }
 
-const withHistoryUiState = (item) => ({
+const normalizeHistoryEntry = (item) => ({
   ...item,
+  rendererMode: normalizeRendererMode(item.rendererMode || rendererMode.value),
+  sampleDensity: Math.max(
+    MIN_RESOLUTION_PERCENT,
+    Number(item.sampleDensity ?? item.morphData?.meta?.resolutionPercent ?? sampleDensity.value) || sampleDensity.value,
+  ),
+  keyframes: normalizeKeyframes(item.keyframes || makeDefaultKeyframes()),
+  exportSettings: {
+    ...exportSettings.value,
+    ...(item.exportSettings || {}),
+  },
+  detailLoaded: Boolean(item.morphData),
+})
+
+const withHistoryUiState = (item) => ({
+  ...normalizeHistoryEntry(item),
   isDeleting: false,
   isExiting: false,
+  isHydrating: false,
 })
 
 const stripHistoryUiState = (item) => {
-  const { isDeleting, isExiting, ...record } = item
+  const { isDeleting, isExiting, isHydrating, detailLoaded, ...record } = item
   return record
 }
 
@@ -1276,6 +1294,52 @@ const patchHistoryItem = (id, patch) => {
         }
       : item,
   )
+}
+
+const getHistoryItem = (id) =>
+  historyItems.value.find((item) => item.id === id)
+
+const ensureHistoryItemDetails = async (id) => {
+  const existing = getHistoryItem(id)
+  if (!existing) return null
+  if (existing.morphData) return existing
+  if (historyDetailTasks.has(id)) return historyDetailTasks.get(id)
+
+  patchHistoryItem(id, { isHydrating: true })
+
+  const task = (async () => {
+    try {
+      const detail = await loadHistoryRecord(id)
+      if (!detail) return null
+
+      const hydrated = normalizeHistoryEntry({
+        ...detail,
+        sourceUrlBytes: existing.sourceUrlBytes,
+        targetUrlBytes: existing.targetUrlBytes,
+        thumbnailBytes: existing.thumbnailBytes,
+        morphDataBytes: existing.morphDataBytes,
+      })
+
+      patchHistoryItem(id, {
+        ...hydrated,
+        isHydrating: false,
+      })
+
+      return getHistoryItem(id) || {
+        ...existing,
+        ...hydrated,
+        isHydrating: false,
+      }
+    } catch (error) {
+      patchHistoryItem(id, { isHydrating: false })
+      throw error
+    } finally {
+      historyDetailTasks.delete(id)
+    }
+  })()
+
+  historyDetailTasks.set(id, task)
+  return task
 }
 
 const flushUiFrame = async () => {
@@ -1580,36 +1644,45 @@ const exportFromPreviewPanel = () => {
   exportHistoryItem(activeHistoryId.value)
 }
 
-const replayHistoryItem = (id) => {
-  const entry = historyItems.value.find((item) => item.id === id)
-  if (!entry || entry.isDeleting || entry.isExiting) return
+const replayHistoryItem = async (id) => {
+  const entry = getHistoryItem(id)
+  if (!entry || entry.isDeleting || entry.isExiting || entry.isHydrating) return
 
   stopTimeline()
   activeHistoryId.value = id
 
+  const resolvedEntry = entry.morphData
+    ? entry
+    : await ensureHistoryItemDetails(id)
+
+  if (!resolvedEntry?.morphData) {
+    setStatus(i18nText('workflow.historyLoadFailed'), i18nText('workflow.warning'))
+    return
+  }
+
   sourceImage.value = {
-    name: entry.sourceName,
-    url: entry.sourceUrl,
+    name: resolvedEntry.sourceName,
+    url: resolvedEntry.sourceUrl,
   }
 
   targetImage.value = {
-    name: entry.targetName,
-    url: entry.targetUrl,
+    name: resolvedEntry.targetName,
+    url: resolvedEntry.targetUrl,
   }
 
-  morphData.value = entry.morphData
+  morphData.value = resolvedEntry.morphData
   sampleDensity.value = Math.max(
     MIN_RESOLUTION_PERCENT,
-    Number(entry.sampleDensity ?? entry.morphData?.meta?.resolutionPercent ?? sampleDensity.value) || sampleDensity.value,
+    Number(resolvedEntry.sampleDensity ?? resolvedEntry.morphData?.meta?.resolutionPercent ?? sampleDensity.value) || sampleDensity.value,
   )
-  rendererMode.value = normalizeRendererMode(entry.rendererMode || rendererMode.value)
-  durationSeconds.value = clamp(Number(entry.durationSeconds) || 4, 1, 12)
-  keyframes.value = normalizeKeyframes(entry.keyframes || makeDefaultKeyframes())
+  rendererMode.value = normalizeRendererMode(resolvedEntry.rendererMode || rendererMode.value)
+  durationSeconds.value = clamp(Number(resolvedEntry.durationSeconds) || 4, 1, 12)
+  keyframes.value = normalizeKeyframes(resolvedEntry.keyframes || makeDefaultKeyframes())
 
-  if (entry.exportSettings) {
+  if (resolvedEntry.exportSettings) {
     exportSettings.value = {
       ...exportSettings.value,
-      ...entry.exportSettings,
+      ...resolvedEntry.exportSettings,
     }
   }
 
@@ -1618,8 +1691,8 @@ const replayHistoryItem = (id) => {
 
   setStatus(
     i18nText('workflow.historyLoaded', {
-      source: entry.sourceName,
-      target: entry.targetName,
+      source: resolvedEntry.sourceName,
+      target: resolvedEntry.targetName,
     }),
     i18nText('workflow.historyReplay'),
     0,
@@ -1628,7 +1701,7 @@ const replayHistoryItem = (id) => {
 
 const removeHistoryItem = async (id) => {
   const entry = historyItems.value.find((item) => item.id === id)
-  if (!entry || entry.isDeleting || entry.isExiting) return
+  if (!entry || entry.isDeleting || entry.isExiting || entry.isHydrating) return
 
   if (busy.value) {
     setStatus(i18nText('workflow.busyTask'), i18nText('workflow.busy'), pipelineProgress.value)
@@ -1707,8 +1780,8 @@ const mapExportProgress = (phase, progress) => {
 }
 
 const exportHistoryItem = async (id) => {
-  const entry = historyItems.value.find((item) => item.id === id)
-  if (!entry || entry.isDeleting || entry.isExiting) return
+  const entry = getHistoryItem(id)
+  if (!entry || entry.isDeleting || entry.isExiting || entry.isHydrating) return
 
   if (busy.value) {
     setStatus(i18nText('workflow.busyTask'), i18nText('workflow.busy'), pipelineProgress.value)
@@ -1723,8 +1796,16 @@ const exportHistoryItem = async (id) => {
   stopTimeline()
 
   try {
+    const resolvedEntry = entry.morphData
+      ? entry
+      : await ensureHistoryItemDetails(id)
+
+    if (!resolvedEntry?.morphData) {
+      throw new Error(resolveTextSpec(i18nText('workflow.historyLoadFailed')))
+    }
+
     const fps = clamp(Number(exportSettings.value.fps) || 24, 8, 48)
-    const { width, height } = resolveExportSize(entry.morphData, exportSettings.value.resolution)
+    const { width, height } = resolveExportSize(resolvedEntry.morphData, exportSettings.value.resolution)
 
     setStatus(
       i18nText('workflow.preparingExport', { width, height, fps }),
@@ -1732,14 +1813,14 @@ const exportHistoryItem = async (id) => {
       4,
     )
 
-    const gifBlob = await exportMorphAsGif(entry.morphData, {
-      durationSeconds: entry.durationSeconds,
+    const gifBlob = await exportMorphAsGif(resolvedEntry.morphData, {
+      durationSeconds: resolvedEntry.durationSeconds,
       fps,
       width,
       height,
       rendererMode: normalizeRendererMode(rendererMode.value),
       sourceOverlayEnabled: sourceOverlayEnabled.value,
-      keyframes: normalizeKeyframes(entry.keyframes || keyframes.value),
+      keyframes: normalizeKeyframes(resolvedEntry.keyframes || keyframes.value),
       renderBackend: 'webgl',
       allow2DFallback: true,
       signal: abortController.signal,
@@ -1798,6 +1879,7 @@ const savePrefsSoon = () => {
   prefsTimer = setTimeout(() => {
     saveUiPrefs({
       selectedTemplateId: selectedTemplateId.value,
+      activeHistoryId: activeHistoryId.value,
       themeMode: themeMode.value,
       componentTone: componentTone.value,
       languageMode: languageMode.value,
@@ -1819,6 +1901,7 @@ const savePrefsSoon = () => {
 watch(
   [
     selectedTemplateId,
+    activeHistoryId,
     themeMode,
     componentTone,
     languageMode,
@@ -1841,9 +1924,11 @@ watch(
 onMounted(async () => {
   isLoadingHistory.value = true
   const prefs = loadUiPrefs()
+  let preferredActiveHistoryId = ''
 
   if (prefs) {
     selectedTemplateId.value = prefs.selectedTemplateId || selectedTemplateId.value
+    preferredActiveHistoryId = prefs.activeHistoryId || ''
     themeMode.value = normalizeThemeMode(prefs.themeMode || themeMode.value)
     componentTone.value = normalizeComponentTone(prefs.componentTone || componentTone.value)
     languageMode.value = normalizeLanguageMode(prefs.languageMode || languageMode.value)
@@ -1905,24 +1990,13 @@ onMounted(async () => {
   window.addEventListener('resize', onViewportResize)
 
   try {
-    const loaded = await loadHistoryRecords(24)
+    const loaded = await loadHistorySummaries(24)
 
-    historyItems.value = loaded.map((item) => withHistoryUiState({
-      ...item,
-      rendererMode: normalizeRendererMode(item.rendererMode || rendererMode.value),
-      sampleDensity: Math.max(
-        MIN_RESOLUTION_PERCENT,
-        Number(item.sampleDensity ?? item.morphData?.meta?.resolutionPercent ?? sampleDensity.value) || sampleDensity.value,
-      ),
-      keyframes: normalizeKeyframes(item.keyframes || makeDefaultKeyframes()),
-      exportSettings: {
-        ...exportSettings.value,
-        ...(item.exportSettings || {}),
-      },
-    }))
+    historyItems.value = loaded.map((item) => withHistoryUiState(item))
 
     if (historyItems.value.length > 0) {
-      replayHistoryItem(historyItems.value[0].id)
+      const preferredEntry = historyItems.value.find((item) => item.id === preferredActiveHistoryId)
+      await replayHistoryItem(preferredEntry?.id || historyItems.value[0].id)
     }
   } catch {
     setStatus(i18nText('workflow.historyLoadFailed'), i18nText('workflow.warning'))
@@ -1942,6 +2016,7 @@ onBeforeUnmount(() => {
   cancelCacheStatsRefresh()
   generateAbortController?.abort()
   exportAbortController?.abort()
+  historyDetailTasks.clear()
   stopTimeline()
   stopProgressAnimation()
   stopGenerateProgressEstimator()
