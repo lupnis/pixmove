@@ -28,6 +28,17 @@ const DEFAULT_EXPORT_VORONOI_CELLS = 14000
 const resolveRevealProgress = (progress) =>
   smoothstep(clamp((Number(progress) - 0.01) / 0.22, 0, 1))
 
+const resolveGridFlowMotionProgress = (progress, sourceOverlayActive) => {
+  const p = clamp(Number(progress) || 0, 0, 1)
+  if (!sourceOverlayActive) return p
+
+  // Start swapping only after source overlay has finished fading.
+  const motionStart = 0.32
+  if (p <= motionStart) return 0
+
+  return clamp((p - motionStart) / (1 - motionStart), 0, 1)
+}
+
 const resolveRevealHash = (sourceIndex) => {
   const seed = (Math.imul((sourceIndex + 1) ^ 0x9e3779b9, 2654435761) >>> 0)
   return seed / 4294967295
@@ -377,23 +388,25 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
+    const sourceOverlayActive = sourceOverlayEnabled && Boolean(baseSourceSprite)
     const revealProgress = resolveEffectiveRevealProgress(p)
+    const motionProgress = resolveGridFlowMotionProgress(p, sourceOverlayActive)
 
     const grid = currentMorph.grid
     const count = gridFlowState.count
     const frameCount = Math.max(2, gridFlowState.frameCount || 2)
-    const frameProgress = clamp(p, 0, 1) * (frameCount - 1)
+    const frameProgress = clamp(motionProgress, 0, 1) * (frameCount - 1)
     const frameA = Math.floor(frameProgress)
     const frameB = Math.min(frameCount - 1, frameA + 1)
     const localT = smoothstep(frameProgress - frameA)
     const offsetA = frameA * count
     const offsetB = frameB * count
-    const tailBlend = smoothstep(clamp((p - 0.8) / 0.2, 0, 1))
+    const tailBlend = smoothstep(clamp((motionProgress - 0.8) / 0.2, 0, 1))
     const viewScale = Math.max(0.0001, Math.min(app.screen.width / currentMorph.width, app.screen.height / currentMorph.height))
     const overlapPxBase = 2.8 + (3.5 - 2.8) * tailBlend
-    const resetSmoothing = !flowSmoothInitialized || p < flowLastProgress - 0.0001
-    const forceTarget = p >= 0.999
-    const progressDelta = resetSmoothing ? 0 : Math.max(0, p - flowLastProgress)
+    const resetSmoothing = !flowSmoothInitialized || motionProgress < flowLastProgress - 0.0001
+    const forceTarget = motionProgress >= 0.999
+    const progressDelta = resetSmoothing ? 0 : Math.max(0, motionProgress - flowLastProgress)
     const virtualFrameSpan = progressDelta * Math.max(1, frameCount - 1)
     const stepBudgetPx = forceTarget
       ? Number.POSITIVE_INFINITY
@@ -472,7 +485,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     }
 
     flowSmoothInitialized = true
-    flowLastProgress = p
+    flowLastProgress = motionProgress
   }
 
   const drawPolygon = (p) => {

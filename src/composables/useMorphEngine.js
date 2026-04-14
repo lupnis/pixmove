@@ -233,6 +233,17 @@ const interpolateColor = (start, end, t) => ({
 const resolveRevealProgress = (progress) =>
   smoothstep(clamp((Number(progress) - 0.01) / 0.22, 0, 1))
 
+const resolveGridFlowMotionProgress = (progress, sourceOverlayActive) => {
+  const p = clamp(Number(progress) || 0, 0, 1)
+  if (!sourceOverlayActive) return p
+
+  // Keep grid-flow blocks static until source overlay has fully faded out.
+  const motionStart = 0.32
+  if (p <= motionStart) return 0
+
+  return clamp((p - motionStart) / (1 - motionStart), 0, 1)
+}
+
 const resolveSourceOverlayAlpha = (progress) => {
   const p = clamp(progress, 0, 1)
   const revealProgress = resolveRevealProgress(p)
@@ -954,6 +965,7 @@ export const drawMorphFrame = (ctx, morphData, progress, options = {}) => {
   }
 
   const revealProgress = sourceOverlayActive ? resolveRevealProgress(p) : 1
+  const gridFlowMotionProgress = resolveGridFlowMotionProgress(p, sourceOverlayActive)
 
   const grid = morphData.grid
   const rendererMode = normalizeRendererMode(options.rendererMode ?? DEFAULT_RENDERER_MODE)
@@ -971,7 +983,16 @@ export const drawMorphFrame = (ctx, morphData, progress, options = {}) => {
   }
 
   if (rendererMode === RENDERER_MODE_GRID_FLOW) {
-    drawGridFlowCells(ctx, frameState, grid, p, scale, offsetX, offsetY, revealProgress)
+    drawGridFlowCells(
+      ctx,
+      frameState,
+      grid,
+      gridFlowMotionProgress,
+      scale,
+      offsetX,
+      offsetY,
+      revealProgress,
+    )
     return
   }
 

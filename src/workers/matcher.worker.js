@@ -1,6 +1,24 @@
-import { computeAssignmentsWasm, simulateMotionWasm } from './useMorphWasm'
+import { createAssignmentsWasmRunner, createMotionSimulationWasmRunner } from './useMorphWasm'
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+const yieldToEventLoop = () => new Promise((resolve) => setTimeout(resolve, 0))
+const resolveAssignmentChunkSize = (count) => {
+  if (count >= 16000) return 1
+  if (count >= 6000) return 2
+  return 3
+}
+const resolveSimulationFrameChunk = (count) => {
+  if (count >= 24000) return 1
+  if (count >= 10000) return 2
+  if (count >= 4000) return 4
+  return 6
+}
+const resolveSimulationCellChunk = (count) => {
+  if (count >= 24000) return 384
+  if (count >= 10000) return 768
+  if (count >= 4000) return 1200
+  return 1800
+}
 
 const colorDistanceSq = (aBase, bBase, aColors, bColors) => {
   const dr = aColors[aBase] - bColors[bBase]
@@ -168,7 +186,7 @@ const matchPayload = async (payload) => {
   })
   postMessage({ type: 'progress', id: payload.id, progress: 0.12, phase: 'assignment' })
 
-  const assignment = await computeAssignmentsWasm(
+  const assignmentRunner = await createAssignmentsWasmRunner(
     sourceGrid.colors,
     targetGrid.colors,
     targetWeightInfo.weights,
@@ -176,6 +194,28 @@ const matchPayload = async (payload) => {
     rows,
     proximityFactor,
   )
+
+  const assignmentChunkSize = resolveAssignmentChunkSize(sourceGrid.count)
+  let assignmentStep = assignmentRunner.step(assignmentChunkSize)
+  postMessage({
+    type: 'progress',
+    id: payload.id,
+    progress: 0.12 + assignmentStep.progress * 0.88,
+    phase: 'assignment',
+  })
+
+  while (!assignmentStep.done) {
+    await yieldToEventLoop()
+    assignmentStep = assignmentRunner.step(assignmentChunkSize)
+    postMessage({
+      type: 'progress',
+      id: payload.id,
+      progress: 0.12 + assignmentStep.progress * 0.88,
+      phase: 'assignment',
+    })
+  }
+
+  const assignment = assignmentRunner.finalize()
 
   postMessage({ type: 'progress', id: payload.id, progress: 1, phase: 'assignment' })
 
@@ -191,7 +231,7 @@ const matchPayload = async (payload) => {
   }
 
   postMessage({ type: 'progress', id: payload.id, progress: 0, phase: 'simulation' })
-  const motionPath = await simulateMotionWasm(
+  const motionRunner = await createMotionSimulationWasmRunner(
     sourceGrid.centers,
     targetPositions,
     rasterWidth,
@@ -200,6 +240,68 @@ const matchPayload = async (payload) => {
     rows,
     simulationFrames,
   )
+
+  const frameChunkSize = resolveSimulationFrameChunk(sourceGrid.count)
+  const cellChunkSize = resolveSimulationCellChunk(sourceGrid.count)
+
+  let motionFrameStep = motionRunner.stepFrames(frameChunkSize)
+  postMessage({
+    type: 'progress',
+    id: payload.id,
+    progress: motionFrameStep.progress * 0.82,
+    phase: 'simulation',
+  })
+
+  while (!motionFrameStep.done) {
+    await yieldToEventLoop()
+    motionFrameStep = motionRunner.stepFrames(frameChunkSize)
+    postMessage({
+      type: 'progress',
+      id: payload.id,
+      progress: motionFrameStep.progress * 0.82,
+      phase: 'simulation',
+    })
+  }
+
+  let backwardStep = motionRunner.settleBackward(cellChunkSize)
+  postMessage({
+    type: 'progress',
+    id: payload.id,
+    progress: 0.82 + backwardStep.progress * 0.10,
+    phase: 'simulation',
+  })
+
+  while (!backwardStep.done) {
+    await yieldToEventLoop()
+    backwardStep = motionRunner.settleBackward(cellChunkSize)
+    postMessage({
+      type: 'progress',
+      id: payload.id,
+      progress: 0.82 + backwardStep.progress * 0.10,
+      phase: 'simulation',
+    })
+  }
+
+  let forwardStep = motionRunner.settleForward(cellChunkSize)
+  postMessage({
+    type: 'progress',
+    id: payload.id,
+    progress: 0.92 + forwardStep.progress * 0.08,
+    phase: 'simulation',
+  })
+
+  while (!forwardStep.done) {
+    await yieldToEventLoop()
+    forwardStep = motionRunner.settleForward(cellChunkSize)
+    postMessage({
+      type: 'progress',
+      id: payload.id,
+      progress: 0.92 + forwardStep.progress * 0.08,
+      phase: 'simulation',
+    })
+  }
+
+  const motionPath = motionRunner.finalize()
 
   postMessage({ type: 'progress', id: payload.id, progress: 1, phase: 'simulation' })
 

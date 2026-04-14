@@ -123,20 +123,16 @@ function calcHeuristic(
   return color * weight + spatialCost * spatialCost
 }
 
-export function computeAssignments(
+export function initAssignments(
   sourceColorsPtr: usize,
   targetColorsPtr: usize,
   targetWeightsPtr: usize,
   targetToSourcePtr: usize,
-  sourceToTargetPtr: usize,
   heuristicsPtr: usize,
-  statsPtr: usize,
   gridWidth: i32,
   gridHeight: i32,
   count: i32,
   proximityFactor: f32,
-  maxGenerations: i32,
-  swapsPerGeneration: i32,
 ): void {
   for (let index = 0; index < count; index += 1) {
     store<u32>(scalarF32Offset(targetToSourcePtr, index), <u32>index)
@@ -156,60 +152,129 @@ export function computeAssignments(
   }
 
   seedRng(hash2D(<u32>gridWidth, <u32>(gridHeight ^ count)))
+}
+
+export function stepAssignments(
+  sourceColorsPtr: usize,
+  targetColorsPtr: usize,
+  targetWeightsPtr: usize,
+  targetToSourcePtr: usize,
+  heuristicsPtr: usize,
+  gridWidth: i32,
+  gridHeight: i32,
+  count: i32,
+  proximityFactor: f32,
+  distance: i32,
+  swapsPerGeneration: i32,
+): i32 {
+  let swapsMade = 0
+  const safeDistance = maxI32(2, distance)
+
+  for (let attempt = 0; attempt < swapsPerGeneration; attempt += 1) {
+    const aPos = <i32>(nextRandom() * <f64>count)
+    const ax = aPos % gridWidth
+    const ay = aPos / gridWidth
+    const bx = clampI32(ax + <i32>(nextRandom() * <f64>(safeDistance * 2 + 1)) - safeDistance, 0, gridWidth - 1)
+    const by = clampI32(ay + <i32>(nextRandom() * <f64>(safeDistance * 2 + 1)) - safeDistance, 0, gridHeight - 1)
+    const bPos = by * gridWidth + bx
+
+    if (aPos == bPos) continue
+
+    const sourceA = <i32>load<u32>(scalarF32Offset(targetToSourcePtr, aPos))
+    const sourceB = <i32>load<u32>(scalarF32Offset(targetToSourcePtr, bPos))
+
+    const current = load<f64>(scalarF64Offset(heuristicsPtr, aPos))
+      + load<f64>(scalarF64Offset(heuristicsPtr, bPos))
+
+    const nextA = calcHeuristic(
+      sourceColorsPtr,
+      targetColorsPtr,
+      targetWeightsPtr,
+      sourceB,
+      aPos,
+      gridWidth,
+      gridHeight,
+      proximityFactor,
+    )
+    const nextB = calcHeuristic(
+      sourceColorsPtr,
+      targetColorsPtr,
+      targetWeightsPtr,
+      sourceA,
+      bPos,
+      gridWidth,
+      gridHeight,
+      proximityFactor,
+    )
+
+    if (nextA + nextB < current) {
+      store<u32>(scalarF32Offset(targetToSourcePtr, aPos), <u32>sourceB)
+      store<u32>(scalarF32Offset(targetToSourcePtr, bPos), <u32>sourceA)
+      store<f64>(scalarF64Offset(heuristicsPtr, aPos), nextA)
+      store<f64>(scalarF64Offset(heuristicsPtr, bPos), nextB)
+      swapsMade += 1
+    }
+  }
+
+  return swapsMade
+}
+
+export function finalizeAssignments(
+  targetToSourcePtr: usize,
+  sourceToTargetPtr: usize,
+  count: i32,
+): void {
+  for (let targetIndex = 0; targetIndex < count; targetIndex += 1) {
+    const sourceIndex = <i32>load<u32>(scalarF32Offset(targetToSourcePtr, targetIndex))
+    store<u32>(scalarF32Offset(sourceToTargetPtr, sourceIndex), <u32>targetIndex)
+  }
+}
+
+export function computeAssignments(
+  sourceColorsPtr: usize,
+  targetColorsPtr: usize,
+  targetWeightsPtr: usize,
+  targetToSourcePtr: usize,
+  sourceToTargetPtr: usize,
+  heuristicsPtr: usize,
+  statsPtr: usize,
+  gridWidth: i32,
+  gridHeight: i32,
+  count: i32,
+  proximityFactor: f32,
+  maxGenerations: i32,
+  swapsPerGeneration: i32,
+): void {
+  initAssignments(
+    sourceColorsPtr,
+    targetColorsPtr,
+    targetWeightsPtr,
+    targetToSourcePtr,
+    heuristicsPtr,
+    gridWidth,
+    gridHeight,
+    count,
+    proximityFactor,
+  )
 
   let acceptedSwaps = 0
   let generationCount = 0
   let maxDist = <f64>maxI32(gridWidth, gridHeight)
 
   for (let generation = 0; generation < maxGenerations; generation += 1) {
-    let swapsMade = 0
-    const distance = maxI32(2, <i32>Math.round(maxDist))
-
-    for (let attempt = 0; attempt < swapsPerGeneration; attempt += 1) {
-      const aPos = <i32>(nextRandom() * <f64>count)
-      const ax = aPos % gridWidth
-      const ay = aPos / gridWidth
-      const bx = clampI32(ax + <i32>(nextRandom() * <f64>(distance * 2 + 1)) - distance, 0, gridWidth - 1)
-      const by = clampI32(ay + <i32>(nextRandom() * <f64>(distance * 2 + 1)) - distance, 0, gridHeight - 1)
-      const bPos = by * gridWidth + bx
-
-      if (aPos == bPos) continue
-
-      const sourceA = <i32>load<u32>(scalarF32Offset(targetToSourcePtr, aPos))
-      const sourceB = <i32>load<u32>(scalarF32Offset(targetToSourcePtr, bPos))
-
-      const current = load<f64>(scalarF64Offset(heuristicsPtr, aPos))
-        + load<f64>(scalarF64Offset(heuristicsPtr, bPos))
-
-      const nextA = calcHeuristic(
-        sourceColorsPtr,
-        targetColorsPtr,
-        targetWeightsPtr,
-        sourceB,
-        aPos,
-        gridWidth,
-        gridHeight,
-        proximityFactor,
-      )
-      const nextB = calcHeuristic(
-        sourceColorsPtr,
-        targetColorsPtr,
-        targetWeightsPtr,
-        sourceA,
-        bPos,
-        gridWidth,
-        gridHeight,
-        proximityFactor,
-      )
-
-      if (nextA + nextB < current) {
-        store<u32>(scalarF32Offset(targetToSourcePtr, aPos), <u32>sourceB)
-        store<u32>(scalarF32Offset(targetToSourcePtr, bPos), <u32>sourceA)
-        store<f64>(scalarF64Offset(heuristicsPtr, aPos), nextA)
-        store<f64>(scalarF64Offset(heuristicsPtr, bPos), nextB)
-        swapsMade += 1
-      }
-    }
+    const swapsMade = stepAssignments(
+      sourceColorsPtr,
+      targetColorsPtr,
+      targetWeightsPtr,
+      targetToSourcePtr,
+      heuristicsPtr,
+      gridWidth,
+      gridHeight,
+      count,
+      proximityFactor,
+      maxI32(2, <i32>Math.round(maxDist)),
+      swapsPerGeneration,
+    )
 
     acceptedSwaps += swapsMade
     generationCount = generation + 1
@@ -227,47 +292,55 @@ export function computeAssignments(
     }
   }
 
-  for (let targetIndex = 0; targetIndex < count; targetIndex += 1) {
-    const sourceIndex = <i32>load<u32>(scalarF32Offset(targetToSourcePtr, targetIndex))
-    store<u32>(scalarF32Offset(sourceToTargetPtr, sourceIndex), <u32>targetIndex)
-  }
+  finalizeAssignments(targetToSourcePtr, sourceToTargetPtr, count)
 
   store<i32>(statsPtr, generationCount)
   store<i32>(statsPtr + 4, acceptedSwaps)
 }
 
-export function simulateMotion(
+export function initMotionState(
   sourcePositionsPtr: usize,
+  motionPathPtr: usize,
+  positionsPtr: usize,
+  velocitiesPtr: usize,
+  accelerationsPtr: usize,
+  agesPtr: usize,
+  count: i32,
+): void {
+  const positionsBytes = <usize>(count << 3)
+  memory.copy(positionsPtr, sourcePositionsPtr, positionsBytes)
+  memory.fill(velocitiesPtr, 0, positionsBytes)
+  memory.fill(accelerationsPtr, 0, positionsBytes)
+  memory.fill(agesPtr, 0, <usize>(count << 1))
+  memory.copy(motionPathPtr, positionsPtr, positionsBytes)
+}
+
+export function simulateMotionFrames(
   targetPositionsPtr: usize,
   motionPathPtr: usize,
+  positionsPtr: usize,
+  velocitiesPtr: usize,
+  accelerationsPtr: usize,
+  agesPtr: usize,
+  nextLinkPtr: usize,
+  gridHeadPtr: usize,
   width: f32,
   height: f32,
   gridWidth: i32,
   gridHeight: i32,
   count: i32,
-  frameCount: i32,
+  frameStart: i32,
+  frameEnd: i32,
   substeps: i32,
 ): void {
-  if (count <= 0) {
-    return
-  }
+  if (count <= 0) return
 
   const safeGridWidth = maxI32(1, gridWidth)
   const safeGridHeight = maxI32(1, gridHeight)
-  const safeFrames = maxI32(1, frameCount)
   const safeSubsteps = maxI32(1, substeps)
+  const startFrame = maxI32(1, frameStart)
+  const endFrame = maxI32(startFrame, frameEnd)
   const positionsBytes = <usize>(count << 3)
-  const positionsPtr = alloc(positionsBytes)
-  const velocitiesPtr = alloc(positionsBytes)
-  const accelerationsPtr = alloc(positionsBytes)
-  const agesPtr = alloc(<usize>(count << 1))
-  const nextLinkPtr = alloc(<usize>(count << 2))
-  const gridHeadPtr = alloc(<usize>((safeGridWidth * safeGridHeight) << 2))
-
-  memory.copy(positionsPtr, sourcePositionsPtr, positionsBytes)
-  memory.fill(velocitiesPtr, 0, positionsBytes)
-  memory.fill(accelerationsPtr, 0, positionsBytes)
-  memory.fill(agesPtr, 0, <usize>(count << 1))
 
   const cellWidth: f32 = width / <f32>safeGridWidth
   const cellHeight: f32 = height / <f32>safeGridHeight
@@ -280,10 +353,7 @@ export function simulateMotion(
   const alignmentFactor: f32 = 0.8
   const sideLength: f32 = Mathf.max(<f32>1.0, Mathf.max(width, height))
 
-  // Frame 0 always starts from the exact source layout.
-  memory.copy(motionPathPtr, positionsPtr, positionsBytes)
-
-  for (let frame = 1; frame < safeFrames; frame += 1) {
+  for (let frame = startFrame; frame < endFrame; frame += 1) {
     for (let step = 0; step < safeSubsteps; step += 1) {
       for (let g = 0, total = safeGridWidth * safeGridHeight; g < total; g += 1) {
         store<i32>(scalarF32Offset(gridHeadPtr, g), -1)
@@ -420,79 +490,220 @@ export function simulateMotion(
 
     memory.copy(motionPathPtr + <usize>(frame * count << 3), positionsPtr, positionsBytes)
   }
+}
+
+export function settleMotionBackward(
+  sourcePositionsPtr: usize,
+  targetPositionsPtr: usize,
+  motionPathPtr: usize,
+  width: f32,
+  height: f32,
+  gridWidth: i32,
+  gridHeight: i32,
+  count: i32,
+  frameCount: i32,
+  cellStart: i32,
+  cellEnd: i32,
+): void {
+  if (count <= 0 || frameCount <= 1) return
+
+  const safeGridWidth = maxI32(1, gridWidth)
+  const safeGridHeight = maxI32(1, gridHeight)
+  const safeFrames = maxI32(1, frameCount)
+  const startIndex = clampI32(cellStart, 0, count)
+  const endIndex = clampI32(cellEnd, startIndex, count)
+  const pixelSize: f32 = Mathf.min(width / <f32>safeGridWidth, height / <f32>safeGridHeight)
+  const frameSpan: f32 = <f32>(safeFrames - 1)
+  const minStep: f32 = Mathf.max(<f32>0.12, pixelSize * <f32>0.32)
+
+  for (let index = startIndex; index < endIndex; index += 1) {
+    const sourcePtr = pairOffset(sourcePositionsPtr, index)
+    const targetPtr = pairOffset(targetPositionsPtr, index)
+
+    const sourceX = clampF32(load<f32>(sourcePtr), 0.0, width)
+    const sourceY = clampF32(load<f32>(sourcePtr + 4), 0.0, height)
+    const targetX = clampF32(load<f32>(targetPtr), 0.0, width)
+    const targetY = clampF32(load<f32>(targetPtr + 4), 0.0, height)
+
+    const pathDx = targetX - sourceX
+    const pathDy = targetY - sourceY
+    const pathDist = Mathf.sqrt(pathDx * pathDx + pathDy * pathDy)
+    const avgStep = pathDist / frameSpan
+    const maxStep = Mathf.max(minStep, avgStep * <f32>1.85)
+
+    const firstPtr = motionOffset(motionPathPtr, 0, count, index)
+    const lastPtr = motionOffset(motionPathPtr, safeFrames - 1, count, index)
+
+    store<f32>(firstPtr, sourceX)
+    store<f32>(firstPtr + 4, sourceY)
+    store<f32>(lastPtr, targetX)
+    store<f32>(lastPtr + 4, targetY)
+
+    for (let frame = safeFrames - 2; frame > 0; frame -= 1) {
+      const currentPtr = motionOffset(motionPathPtr, frame, count, index)
+      const nextPtr = motionOffset(motionPathPtr, frame + 1, count, index)
+
+      let currentX = load<f32>(currentPtr)
+      let currentY = load<f32>(currentPtr + 4)
+      const nextX = load<f32>(nextPtr)
+      const nextY = load<f32>(nextPtr + 4)
+
+      const dx = nextX - currentX
+      const dy = nextY - currentY
+      const dist = Mathf.sqrt(dx * dx + dy * dy)
+
+      if (dist > maxStep && dist > <f32>0.0001) {
+        const limited = maxStep / dist
+        currentX = nextX - dx * limited
+        currentY = nextY - dy * limited
+      }
+
+      store<f32>(currentPtr, clampF32(currentX, 0.0, width))
+      store<f32>(currentPtr + 4, clampF32(currentY, 0.0, height))
+    }
+  }
+}
+
+export function settleMotionForward(
+  motionPathPtr: usize,
+  width: f32,
+  height: f32,
+  gridWidth: i32,
+  gridHeight: i32,
+  count: i32,
+  frameCount: i32,
+  cellStart: i32,
+  cellEnd: i32,
+): void {
+  if (count <= 0 || frameCount <= 1) return
+
+  const safeGridWidth = maxI32(1, gridWidth)
+  const safeGridHeight = maxI32(1, gridHeight)
+  const safeFrames = maxI32(1, frameCount)
+  const startIndex = clampI32(cellStart, 0, count)
+  const endIndex = clampI32(cellEnd, startIndex, count)
+  const pixelSize: f32 = Mathf.min(width / <f32>safeGridWidth, height / <f32>safeGridHeight)
+  const minStep: f32 = Mathf.max(<f32>0.12, pixelSize * <f32>0.32)
+
+  for (let index = startIndex; index < endIndex; index += 1) {
+    const firstPtr = motionOffset(motionPathPtr, 0, count, index)
+    const lastPtr = motionOffset(motionPathPtr, safeFrames - 1, count, index)
+    const sourceX = load<f32>(firstPtr)
+    const sourceY = load<f32>(firstPtr + 4)
+    const targetX = load<f32>(lastPtr)
+    const targetY = load<f32>(lastPtr + 4)
+
+    const pathDx = targetX - sourceX
+    const pathDy = targetY - sourceY
+    const pathDist = Mathf.sqrt(pathDx * pathDx + pathDy * pathDy)
+    const avgStep = pathDist / <f32>(safeFrames - 1)
+    const maxStep = Mathf.max(minStep, avgStep * <f32>1.85)
+
+    for (let frame = 1; frame < safeFrames - 1; frame += 1) {
+      const previousPtr = motionOffset(motionPathPtr, frame - 1, count, index)
+      const currentPtr = motionOffset(motionPathPtr, frame, count, index)
+
+      const prevX = load<f32>(previousPtr)
+      const prevY = load<f32>(previousPtr + 4)
+      let currentX = load<f32>(currentPtr)
+      let currentY = load<f32>(currentPtr + 4)
+
+      const dx = currentX - prevX
+      const dy = currentY - prevY
+      const dist = Mathf.sqrt(dx * dx + dy * dy)
+
+      if (dist > maxStep && dist > <f32>0.0001) {
+        const limited = maxStep / dist
+        currentX = prevX + dx * limited
+        currentY = prevY + dy * limited
+      }
+
+      store<f32>(currentPtr, clampF32(currentX, 0.0, width))
+      store<f32>(currentPtr + 4, clampF32(currentY, 0.0, height))
+    }
+  }
+}
+
+export function simulateMotion(
+  sourcePositionsPtr: usize,
+  targetPositionsPtr: usize,
+  motionPathPtr: usize,
+  width: f32,
+  height: f32,
+  gridWidth: i32,
+  gridHeight: i32,
+  count: i32,
+  frameCount: i32,
+  substeps: i32,
+): void {
+  if (count <= 0) {
+    return
+  }
+
+  const safeGridWidth = maxI32(1, gridWidth)
+  const safeGridHeight = maxI32(1, gridHeight)
+  const safeFrames = maxI32(1, frameCount)
+  const positionsBytes = <usize>(count << 3)
+  const positionsPtr = alloc(positionsBytes)
+  const velocitiesPtr = alloc(positionsBytes)
+  const accelerationsPtr = alloc(positionsBytes)
+  const agesPtr = alloc(<usize>(count << 1))
+  const nextLinkPtr = alloc(<usize>(count << 2))
+  const gridHeadPtr = alloc(<usize>((safeGridWidth * safeGridHeight) << 2))
+
+  initMotionState(
+    sourcePositionsPtr,
+    motionPathPtr,
+    positionsPtr,
+    velocitiesPtr,
+    accelerationsPtr,
+    agesPtr,
+    count,
+  )
+
+  simulateMotionFrames(
+    targetPositionsPtr,
+    motionPathPtr,
+    positionsPtr,
+    velocitiesPtr,
+    accelerationsPtr,
+    agesPtr,
+    nextLinkPtr,
+    gridHeadPtr,
+    width,
+    height,
+    safeGridWidth,
+    safeGridHeight,
+    count,
+    1,
+    safeFrames,
+    substeps,
+  )
 
   if (safeFrames > 1) {
-    const frameSpan: f32 = <f32>(safeFrames - 1)
-    const minStep: f32 = Mathf.max(<f32>0.12, pixelSize * <f32>0.32)
-
-    for (let index = 0; index < count; index += 1) {
-      const sourcePtr = pairOffset(sourcePositionsPtr, index)
-      const targetPtr = pairOffset(targetPositionsPtr, index)
-
-      const sourceX = clampF32(load<f32>(sourcePtr), 0.0, width)
-      const sourceY = clampF32(load<f32>(sourcePtr + 4), 0.0, height)
-      const targetX = clampF32(load<f32>(targetPtr), 0.0, width)
-      const targetY = clampF32(load<f32>(targetPtr + 4), 0.0, height)
-
-      const pathDx = targetX - sourceX
-      const pathDy = targetY - sourceY
-      const pathDist = Mathf.sqrt(pathDx * pathDx + pathDy * pathDy)
-      const avgStep = pathDist / frameSpan
-      const maxStep = Mathf.max(minStep, avgStep * <f32>1.85)
-
-      const firstPtr = motionOffset(motionPathPtr, 0, count, index)
-      const lastPtr = motionOffset(motionPathPtr, safeFrames - 1, count, index)
-
-      store<f32>(firstPtr, sourceX)
-      store<f32>(firstPtr + 4, sourceY)
-      store<f32>(lastPtr, targetX)
-      store<f32>(lastPtr + 4, targetY)
-
-      for (let frame = safeFrames - 2; frame > 0; frame -= 1) {
-        const currentPtr = motionOffset(motionPathPtr, frame, count, index)
-        const nextPtr = motionOffset(motionPathPtr, frame + 1, count, index)
-
-        let currentX = load<f32>(currentPtr)
-        let currentY = load<f32>(currentPtr + 4)
-        const nextX = load<f32>(nextPtr)
-        const nextY = load<f32>(nextPtr + 4)
-
-        const dx = nextX - currentX
-        const dy = nextY - currentY
-        const dist = Mathf.sqrt(dx * dx + dy * dy)
-
-        if (dist > maxStep && dist > <f32>0.0001) {
-          const limited = maxStep / dist
-          currentX = nextX - dx * limited
-          currentY = nextY - dy * limited
-        }
-
-        store<f32>(currentPtr, clampF32(currentX, 0.0, width))
-        store<f32>(currentPtr + 4, clampF32(currentY, 0.0, height))
-      }
-
-      for (let frame = 1; frame < safeFrames - 1; frame += 1) {
-        const previousPtr = motionOffset(motionPathPtr, frame - 1, count, index)
-        const currentPtr = motionOffset(motionPathPtr, frame, count, index)
-
-        const prevX = load<f32>(previousPtr)
-        const prevY = load<f32>(previousPtr + 4)
-        let currentX = load<f32>(currentPtr)
-        let currentY = load<f32>(currentPtr + 4)
-
-        const dx = currentX - prevX
-        const dy = currentY - prevY
-        const dist = Mathf.sqrt(dx * dx + dy * dy)
-
-        if (dist > maxStep && dist > <f32>0.0001) {
-          const limited = maxStep / dist
-          currentX = prevX + dx * limited
-          currentY = prevY + dy * limited
-        }
-
-        store<f32>(currentPtr, clampF32(currentX, 0.0, width))
-        store<f32>(currentPtr + 4, clampF32(currentY, 0.0, height))
-      }
-    }
+    settleMotionBackward(
+      sourcePositionsPtr,
+      targetPositionsPtr,
+      motionPathPtr,
+      width,
+      height,
+      safeGridWidth,
+      safeGridHeight,
+      count,
+      safeFrames,
+      0,
+      count,
+    )
+    settleMotionForward(
+      motionPathPtr,
+      width,
+      height,
+      safeGridWidth,
+      safeGridHeight,
+      count,
+      safeFrames,
+      0,
+      count,
+    )
   }
 }

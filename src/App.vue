@@ -131,6 +131,12 @@ const SETTINGS_ANIMATION_DELAY = 24
 const GENERATE_PROGRESS_TICK_MS = 90
 const GENERATE_PROGRESS_PRIMARY_CAP = 88
 const GENERATE_PROGRESS_SECONDARY_CAP = 97
+const PRECISE_GENERATE_PROGRESS_PHASES = new Set([
+  'cell_sampling_a',
+  'cell_sampling_b',
+  'assignment',
+  'simulation',
+])
 
 const positionText = computed(() => {
   const current = timelineTime.value * durationSeconds.value
@@ -1026,6 +1032,9 @@ const buildGenerateWorkload = (morphOptions = {}) => {
   }
 }
 
+const hasPreciseGenerateProgress = (phase) =>
+  PRECISE_GENERATE_PROGRESS_PHASES.has(phase)
+
 const estimateGeneratePhaseDuration = (phase, workload = generateWorkload) => {
   const safeWorkload = workload || {
     rasterPixels: DEFAULT_MORPH_WIDTH * DEFAULT_MORPH_HEIGHT,
@@ -1407,7 +1416,9 @@ const generateMorph = async () => {
           lastGeneratePhase = phase
           lastGenerateProgress = 0
           setPipelineProgress(0)
-          startGenerateProgressEstimator(phase)
+          if (!hasPreciseGenerateProgress(phase)) {
+            startGenerateProgressEstimator(phase)
+          }
         }
 
         if (nextProgress >= 100) {
