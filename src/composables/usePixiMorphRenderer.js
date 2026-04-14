@@ -253,6 +253,14 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     }
   }
 
+  const resolveEffectiveRevealProgress = (progress) => {
+    if (!sourceOverlayEnabled || !baseSourceSprite) {
+      return 1
+    }
+
+    return resolveRevealProgress(progress)
+  }
+
   const teardownRenderWorker = () => {
     if (!renderWorker) return
 
@@ -277,7 +285,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
-    const revealProgress = resolveRevealProgress(p)
+    const revealProgress = resolveEffectiveRevealProgress(p)
 
     const lockToTarget = p >= 0.985
     const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
@@ -369,7 +377,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
-    const revealProgress = resolveRevealProgress(p)
+    const revealProgress = resolveEffectiveRevealProgress(p)
 
     const grid = currentMorph.grid
     const count = gridFlowState.count
@@ -395,7 +403,6 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     polygonLayer.clear()
 
     for (let sourceIndex = 0; sourceIndex < count; sourceIndex += 1) {
-      if (!isSourceRevealed(sourceIndex, revealProgress)) continue
       const cellA = gridFlowState.sourceCellByFrame[offsetA + sourceIndex]
       const cellB = gridFlowState.sourceCellByFrame[offsetB + sourceIndex]
 
@@ -441,6 +448,8 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       const centerX = flowSmoothX[sourceIndex]
       const centerY = flowSmoothY[sourceIndex]
 
+      if (!isSourceRevealed(sourceIndex, revealProgress)) continue
+
       const overlapWorld = overlapPxBase / viewScale
       const strokeWidth = Math.max(1, overlapPxBase * 1.2)
       const drawWidth = Math.max(cellAW, cellBW) + overlapWorld * 2
@@ -472,7 +481,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
-    const revealProgress = resolveRevealProgress(p)
+    const revealProgress = resolveEffectiveRevealProgress(p)
 
     const grid = currentMorph.grid
     const lockToTarget = p >= 0.985
@@ -560,7 +569,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
-    const revealProgress = resolveRevealProgress(p)
+    const revealProgress = resolveEffectiveRevealProgress(p)
     if (revealProgress <= 0.001) {
       polygonLayer.clear()
       return
@@ -628,7 +637,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
-    const revealProgress = resolveRevealProgress(progress)
+    const revealProgress = resolveEffectiveRevealProgress(progress)
 
     polygonLayer.clear()
 
@@ -659,7 +668,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
-    const revealProgress = resolveRevealProgress(p)
+    const revealProgress = resolveEffectiveRevealProgress(p)
 
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]

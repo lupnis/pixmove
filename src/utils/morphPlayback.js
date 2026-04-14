@@ -5,6 +5,15 @@ export const smoothstep = (t) => {
   return value * value * (3 - 2 * value)
 }
 
+const resolveTailSeedDirection = (sourceIndex) => {
+  const seed = (Math.imul((sourceIndex + 1) ^ 0x9e3779b9, 2654435761) >>> 0)
+  const angle = (seed % 6283) / 1000
+  return {
+    x: Math.cos(angle),
+    y: Math.sin(angle),
+  }
+}
+
 export const sampleCellPosition = (grid, sourceIndex, progress, out = { x: 0, y: 0 }, options = {}) => {
   if (!grid || !grid.motionPath || grid.count <= 0) {
     out.x = 0
@@ -17,6 +26,8 @@ export const sampleCellPosition = (grid, sourceIndex, progress, out = { x: 0, y:
   const frameCount = Math.max(1, grid.frameCount || 1)
   const allowFinalTarget = options?.allowFinalTarget !== false
   const finalBackoff = clamp(Number(options?.finalBackoff ?? 0.006), 0, 0.1)
+  const targetX = grid.targetPositions?.[base2] ?? 0
+  const targetY = grid.targetPositions?.[base2 + 1] ?? 0
 
   let sampleProgress = p
 
@@ -27,8 +38,8 @@ export const sampleCellPosition = (grid, sourceIndex, progress, out = { x: 0, y:
   }
 
   if (p >= 1 && allowFinalTarget) {
-    out.x = grid.targetPositions?.[base2] ?? 0
-    out.y = grid.targetPositions?.[base2 + 1] ?? 0
+    out.x = targetX
+    out.y = targetY
     return out
   }
 
@@ -51,8 +62,71 @@ export const sampleCellPosition = (grid, sourceIndex, progress, out = { x: 0, y:
   const settleStart = clamp(Number(options?.settleStart ?? 0.78), 0, 1)
   const settleDuration = clamp(Number(options?.settleDuration ?? (1 - settleStart)), 0.001, 1)
   const settle = smoothstep((sampleProgress - settleStart) / settleDuration) * settleStrength
-  x += (grid.targetPositions[base2] - x) * settle
-  y += (grid.targetPositions[base2 + 1] - y) * settle
+  x += (targetX - x) * settle
+  y += (targetY - y) * settle
+
+  const tailAdjustStrength = clamp(Number(options?.tailAdjustStrength ?? 0.42), 0, 1)
+  const tailAdjustStart = clamp(Number(options?.tailAdjustStart ?? 0.9), 0, 1)
+  const tailAdjustDuration = clamp(Number(options?.tailAdjustDuration ?? (1 - tailAdjustStart)), 0.001, 1)
+  const tailT = clamp((sampleProgress - tailAdjustStart) / tailAdjustDuration, 0, 1)
+
+  if (tailAdjustStrength > 0 && tailT > 0 && sampleProgress < 1) {
+    // Enter a short settle window near the end: reach target quickly, then do a subtle damped micro-adjustment.
+    const reachBlend = smoothstep(clamp(tailT / 0.32, 0, 1))
+    x += (targetX - x) * reachBlend
+    y += (targetY - y) * reachBlend
+
+    const probeStep = clamp(Math.max(1 / Math.max(2, frameCount - 1), 0.01), 0.006, 0.06)
+    const probeProgress = clamp(sampleProgress - probeStep, 0, 1)
+    const probeFrameProgress = probeProgress * Math.max(0, frameCount - 1)
+    const probeFrameA = Math.floor(probeFrameProgress)
+    const probeFrameB = Math.min(frameCount - 1, probeFrameA + 1)
+    const probeLocalT = probeFrameProgress - probeFrameA
+    const probeIndexA = (probeFrameA * grid.count + sourceIndex) * 2
+    const probeIndexB = (probeFrameB * grid.count + sourceIndex) * 2
+
+    let probeX = grid.motionPath[probeIndexA] + (grid.motionPath[probeIndexB] - grid.motionPath[probeIndexA]) * probeLocalT
+    let probeY = grid.motionPath[probeIndexA + 1] + (grid.motionPath[probeIndexB + 1] - grid.motionPath[probeIndexA + 1]) * probeLocalT
+    const probeSettle = smoothstep((probeProgress - settleStart) / settleDuration) * settleStrength
+    probeX += (targetX - probeX) * probeSettle
+    probeY += (targetY - probeY) * probeSettle
+
+    let dirX = targetX - probeX
+    let dirY = targetY - probeY
+    let dirLength = Math.hypot(dirX, dirY)
+
+    if (!Number.isFinite(dirLength) || dirLength < 0.0001) {
+      const seed = resolveTailSeedDirection(sourceIndex)
+      dirX = seed.x
+      dirY = seed.y
+      dirLength = 1
+    }
+
+    dirX /= dirLength
+    dirY /= dirLength
+
+    const normalX = -dirY
+    const normalY = dirX
+    const motionScale = clamp(Math.hypot(targetX - probeX, targetY - probeY), 0.06, 0.9)
+    const decay = (1 - tailT) ** 1.2
+    const primaryWave = Math.sin(tailT * Math.PI * 1.5)
+    const secondaryWave = Math.sin(tailT * Math.PI * 2.4 + 0.65)
+    const amplitude = motionScale * 0.4 * tailAdjustStrength * decay
+
+    x += dirX * primaryWave * amplitude + normalX * secondaryWave * amplitude * 0.34
+    y += dirY * primaryWave * amplitude + normalY * secondaryWave * amplitude * 0.34
+
+    const offsetX = x - targetX
+    const offsetY = y - targetY
+    const offsetLength = Math.hypot(offsetX, offsetY)
+    const maxOffset = (0.32 + 0.22 * (1 - tailT)) * tailAdjustStrength
+
+    if (offsetLength > maxOffset && offsetLength > 0.0001) {
+      const ratio = maxOffset / offsetLength
+      x = targetX + offsetX * ratio
+      y = targetY + offsetY * ratio
+    }
+  }
 
   out.x = x
   out.y = y

@@ -106,6 +106,22 @@ const loadingDesc = computed(() => {
   return props.isGenerating ? t('animation.loadingDescGenerating') : t('animation.loadingDescData')
 })
 
+const previewGridWidth = computed(() =>
+  props.morphData?.meta?.resolutionWidth
+  ?? props.morphData?.grid?.columns
+  ?? props.morphData?.meta?.resolution
+  ?? props.morphData?.grid?.side
+  ?? 0,
+)
+
+const previewGridHeight = computed(() =>
+  props.morphData?.meta?.resolutionHeight
+  ?? props.morphData?.grid?.rows
+  ?? props.morphData?.meta?.resolution
+  ?? props.morphData?.grid?.side
+  ?? 0,
+)
+
 const onScrub = (event) => {
   emit('update:timelineTime', Number(event.target.value))
 }
@@ -286,7 +302,7 @@ onBeforeUnmount(() => {
     <div class="control-box">
       <div v-if="morphData" class="preview-stats">
         <span>{{ morphData.meta.resolutionPercent.toFixed(1) }}% {{ t('animation.ofTarget') }}</span>
-        <span>{{ morphData.meta.resolution }} x {{ morphData.meta.resolution }} {{ t('animation.cellsUnit') }}</span>
+        <span>{{ previewGridWidth }} x {{ previewGridHeight }} {{ t('animation.cellsUnit') }}</span>
         <span>{{ morphData.meta.generationCount }} {{ t('animation.swapRounds') }}</span>
         <span>{{ morphData.meta.acceptedSwaps }} {{ t('animation.acceptedSwaps') }}</span>
       </div>

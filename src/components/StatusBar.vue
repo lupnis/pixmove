@@ -29,8 +29,12 @@ const props = defineProps({
     default: 12,
   },
   effectiveResolution: {
-    type: Number,
-    default: 38,
+    type: Object,
+    default: () => ({
+      width: 0,
+      height: 0,
+      count: 0,
+    }),
   },
   busy: {
     type: Boolean,
@@ -79,7 +83,9 @@ const onDensityChange = (event) => {
         <span class="key">{{ t('statusBar.targetResolution') }}</span>
         
         <!-- <span class="density-value">/span> -->
-        <span class="density-value">{{ density.toFixed(1) }}% ({{ effectiveResolution }} x {{ effectiveResolution }})</span>
+        <span class="density-value">
+          {{ density.toFixed(1) }}% ({{ effectiveResolution.width }} x {{ effectiveResolution.height }})
+        </span>
         <input
           class="density-slider density-hint"
           type="range"

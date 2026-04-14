@@ -128,6 +128,9 @@ const HISTORY_REMOVE_EXIT_DURATION = 240
 const SETTINGS_CONTENT_FADE_DURATION = 180
 const SETTINGS_SHELL_TRANSITION_DURATION = 240
 const SETTINGS_ANIMATION_DELAY = 24
+const GENERATE_PROGRESS_TICK_MS = 90
+const GENERATE_PROGRESS_PRIMARY_CAP = 88
+const GENERATE_PROGRESS_SECONDARY_CAP = 97
 
 const positionText = computed(() => {
   const current = timelineTime.value * durationSeconds.value
@@ -306,7 +309,8 @@ const estimateMorphDataBytes = (morphData) => {
 
   if (grid && typeof grid === 'object') {
     bytes += measureBytes({
-      side: grid.side,
+      columns: grid.columns ?? grid.side,
+      rows: grid.rows ?? grid.side,
       count: grid.count,
       frameCount: grid.frameCount,
     })
@@ -576,7 +580,6 @@ let progressAnimation = null
 let prefsTimer = null
 let sourceResolutionTaskId = 0
 let targetResolutionTaskId = 0
-let generatePulseTimer = null
 let lastGenerateProgress = 0
 let lastGeneratePhase = ''
 let paneResizeSession = null
@@ -587,6 +590,13 @@ let settingsDialogTimer = null
 let settingsContentTimer = null
 let settingsUnmountTimer = null
 const historyRemoveTimers = new Map()
+let generateProgressTimer = null
+let generatePhaseEstimate = null
+let generateWorkload = null
+const generateBenchmarkState = {
+  assignmentPerCellMs: 0.08,
+  simulationPerCellFrameMs: 0.0014,
+}
 
 const resolveAppliedTheme = (mode) => {
   const normalized = normalizeThemeMode(mode)
@@ -984,32 +994,148 @@ const setPipelineProgress = (progress, options = {}) => {
   })
 }
 
-const stopGeneratePulse = () => {
-  if (generatePulseTimer) {
-    clearInterval(generatePulseTimer)
-    generatePulseTimer = null
+const nowMs = () =>
+  (typeof performance !== 'undefined' && typeof performance.now === 'function')
+    ? performance.now()
+    : Date.now()
+
+const buildGenerateWorkload = (morphOptions = {}) => {
+  const referenceWidth = Math.max(
+    2,
+    Math.round(Number(morphOptions.resolutionReferenceWidth) || targetResolutionBase.value.width || DEFAULT_MORPH_WIDTH),
+  )
+  const referenceHeight = Math.max(
+    2,
+    Math.round(Number(morphOptions.resolutionReferenceHeight) || targetResolutionBase.value.height || DEFAULT_MORPH_HEIGHT),
+  )
+  const resolution = resolveCellResolution(
+    referenceWidth,
+    referenceHeight,
+    morphOptions.resolutionPercent,
+    morphOptions.maxResolutionPercent,
+  )
+
+  return {
+    referenceWidth,
+    referenceHeight,
+    rasterPixels: referenceWidth * referenceHeight,
+    gridWidth: resolution.width,
+    gridHeight: resolution.height,
+    gridCount: resolution.count,
+    simulationFrames: Math.max(2, Math.round(Number(morphOptions.simulationFrames) || 96)),
   }
 }
 
-const startGeneratePulse = () => {
-  stopGeneratePulse()
+const estimateGeneratePhaseDuration = (phase, workload = generateWorkload) => {
+  const safeWorkload = workload || {
+    rasterPixels: DEFAULT_MORPH_WIDTH * DEFAULT_MORPH_HEIGHT,
+    gridCount: 0,
+    simulationFrames: 96,
+  }
+  const megaPixels = safeWorkload.rasterPixels / 1_000_000
 
-  generatePulseTimer = setInterval(() => {
+  if (phase === 'loading') return 120 + megaPixels * 140
+  if (phase === 'rasterizing_a' || phase === 'rasterizing_b') return 90 + megaPixels * 180
+  if (phase === 'cell_sampling_a' || phase === 'cell_sampling_b') return 80 + megaPixels * 120 + safeWorkload.gridCount * 0.002
+  if (phase === 'matching_worker') return 140
+  if (phase === 'assignment') return 180 + safeWorkload.gridCount * generateBenchmarkState.assignmentPerCellMs
+  if (phase === 'simulation') {
+    return 150 + (
+      safeWorkload.gridCount
+      * safeWorkload.simulationFrames
+      * generateBenchmarkState.simulationPerCellFrameMs
+    )
+  }
+
+  return 220
+}
+
+const estimateGeneratePhaseProgress = (elapsedMs, expectedMs) => {
+  const safeExpectedMs = Math.max(120, Number(expectedMs) || 220)
+
+  if (elapsedMs <= safeExpectedMs) {
+    return (elapsedMs / safeExpectedMs) * GENERATE_PROGRESS_PRIMARY_CAP
+  }
+
+  const overflowWindow = Math.max(360, safeExpectedMs * 0.85)
+  const overflowRatio = clamp((elapsedMs - safeExpectedMs) / overflowWindow, 0, 1)
+
+  return GENERATE_PROGRESS_PRIMARY_CAP
+    + overflowRatio * (GENERATE_PROGRESS_SECONDARY_CAP - GENERATE_PROGRESS_PRIMARY_CAP)
+}
+
+const stopGenerateProgressEstimator = () => {
+  if (generateProgressTimer) {
+    clearInterval(generateProgressTimer)
+    generateProgressTimer = null
+  }
+}
+
+const recordGeneratePhaseTiming = (phase, elapsedMs, workload = generateWorkload) => {
+  if (!workload) return
+
+  if (phase === 'assignment' && workload.gridCount > 0) {
+    const sample = Math.max(0.002, (elapsedMs - 180) / workload.gridCount)
+    generateBenchmarkState.assignmentPerCellMs = (
+      generateBenchmarkState.assignmentPerCellMs * 0.68
+      + sample * 0.32
+    )
+    return
+  }
+
+  if (phase === 'simulation' && workload.gridCount > 0 && workload.simulationFrames > 0) {
+    const unitCount = workload.gridCount * workload.simulationFrames
+    const sample = Math.max(0.00008, (elapsedMs - 150) / unitCount)
+    generateBenchmarkState.simulationPerCellFrameMs = (
+      generateBenchmarkState.simulationPerCellFrameMs * 0.68
+      + sample * 0.32
+    )
+  }
+}
+
+const startGenerateProgressEstimator = (phase) => {
+  stopGenerateProgressEstimator()
+
+  if (!phase || phase === 'done') {
+    generatePhaseEstimate = null
+    return
+  }
+
+  generatePhaseEstimate = {
+    phase,
+    startedAt: nowMs(),
+    expectedMs: estimateGeneratePhaseDuration(phase),
+  }
+
+  generateProgressTimer = setInterval(() => {
     if (!busy.value || !isGenerating.value) return
-    if (lastGeneratePhase === 'done') return
+    if (!generatePhaseEstimate || generatePhaseEstimate.phase !== lastGeneratePhase) return
 
-    const cap = 96
-    if (pipelineProgress.value >= cap) return
-
-    const next = clamp(
-      pipelineProgress.value + Math.max(0.12, (cap - pipelineProgress.value) * 0.038),
-      0,
-      cap,
+    const estimated = estimateGeneratePhaseProgress(
+      nowMs() - generatePhaseEstimate.startedAt,
+      generatePhaseEstimate.expectedMs,
     )
 
-    pipelineProgress.value = next
-    lastGenerateProgress = Math.max(lastGenerateProgress, next)
-  }, 120)
+    if (estimated <= lastGenerateProgress + 0.15) return
+
+    lastGenerateProgress = estimated
+    stopProgressAnimation()
+    pipelineProgress.value = clamp(estimated, 0, GENERATE_PROGRESS_SECONDARY_CAP)
+  }, GENERATE_PROGRESS_TICK_MS)
+}
+
+const finishGenerateProgressEstimator = (phase, finalProgress = 100) => {
+  if (generatePhaseEstimate && generatePhaseEstimate.phase === phase) {
+    recordGeneratePhaseTiming(
+      phase,
+      nowMs() - generatePhaseEstimate.startedAt,
+      generateWorkload,
+    )
+  }
+
+  generatePhaseEstimate = null
+  stopGenerateProgressEstimator()
+  lastGenerateProgress = Math.max(lastGenerateProgress, finalProgress)
 }
 
 const setStatus = (message, stage, progress, options = {}) => {
@@ -1110,6 +1236,8 @@ const detailToMorphOptions = (density) => {
   const ratio = clamp((d - MIN_RESOLUTION_PERCENT) / range, 0, 1)
 
   return {
+    width: targetResolutionBase.value.width,
+    height: targetResolutionBase.value.height,
     resolutionReferenceWidth: targetResolutionBase.value.width,
     resolutionReferenceHeight: targetResolutionBase.value.height,
     resolutionPercent: d,
@@ -1196,7 +1324,7 @@ const stopGenerateMorph = () => {
   if (!isGenerating.value || !generateAbortController) return
 
   generateAbortController.abort()
-  stopGeneratePulse()
+  stopGenerateProgressEstimator()
   setStatus(i18nText('workflow.generateStoppedNoSave'), i18nText('workflow.stopped'), 0, {
     smoothProgress: true,
     duration: 140,
@@ -1238,8 +1366,10 @@ const generateMorph = async () => {
   isGenerating.value = true
   lastGenerateProgress = 0
   lastGeneratePhase = ''
+  generateWorkload = null
+  generatePhaseEstimate = null
   setPipelineProgress(0)
-  startGeneratePulse()
+  stopGenerateProgressEstimator()
   stopTimeline()
   timelineTime.value = 0
   syncMorphProgress()
@@ -1251,6 +1381,7 @@ const generateMorph = async () => {
     })
 
     const morphOptions = detailToMorphOptions(sampleDensity.value)
+    generateWorkload = buildGenerateWorkload(morphOptions)
 
     const nextMorphData = await buildMorphData(sourceImage.value.url, targetImage.value.url, {
       ...morphOptions,
@@ -1272,22 +1403,30 @@ const generateMorph = async () => {
         const nextProgress = mapGenerateProgress(p)
 
         if (phase !== lastGeneratePhase) {
+          finishGenerateProgressEstimator(lastGeneratePhase, lastGenerateProgress)
           lastGeneratePhase = phase
           lastGenerateProgress = 0
           setPipelineProgress(0)
+          startGenerateProgressEstimator(phase)
         }
+
+        if (nextProgress >= 100) {
+          finishGenerateProgressEstimator(phase, nextProgress)
+        }
+
+        const displayProgress = Math.max(lastGenerateProgress, nextProgress)
 
         setStatus(
           t('workflow.processingPrefix', { phase: phaseLabel }),
           phaseLabel,
-          Math.max(lastGenerateProgress, nextProgress),
+          displayProgress,
           {
-            smoothProgress: true,
-            duration: 180,
+            smoothProgress: nextProgress >= 100,
+            duration: nextProgress >= 100 ? 160 : 120,
           },
         )
 
-        lastGenerateProgress = Math.max(lastGenerateProgress, nextProgress)
+        lastGenerateProgress = displayProgress
       },
     })
 
@@ -1329,8 +1468,11 @@ const generateMorph = async () => {
       )
     }
   } finally {
-    stopGeneratePulse()
+    stopGenerateProgressEstimator()
+    generatePhaseEstimate = null
+    generateWorkload = null
     lastGeneratePhase = ''
+    lastGenerateProgress = 0
     if (generateAbortController === abortController) {
       generateAbortController = null
     }
@@ -1791,7 +1933,7 @@ onBeforeUnmount(() => {
   exportAbortController?.abort()
   stopTimeline()
   stopProgressAnimation()
-  stopGeneratePulse()
+  stopGenerateProgressEstimator()
   stopPaneResize()
   window.removeEventListener('resize', onViewportResize)
 

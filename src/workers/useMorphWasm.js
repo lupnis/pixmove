@@ -37,9 +37,16 @@ const allocBytes = (memory, alloc, size) => {
   }
 }
 
-export const computeAssignmentsWasm = async (sourceColors, targetColors, targetWeights, side, proximityFactor) => {
+export const computeAssignmentsWasm = async (
+  sourceColors,
+  targetColors,
+  targetWeights,
+  columns,
+  rows,
+  proximityFactor,
+) => {
   const wasm = await getWasm()
-  const count = side * side
+  const count = Math.max(1, columns) * Math.max(1, rows)
   const maxGenerations = 96
   const swapsPerGeneration = Math.max(count * 36, 8192)
 
@@ -61,7 +68,8 @@ export const computeAssignmentsWasm = async (sourceColors, targetColors, targetW
     sourceToTargetPtr,
     heuristicsPtr,
     statsPtr,
-    side,
+    columns,
+    rows,
     count,
     proximityFactor,
     maxGenerations,
@@ -80,7 +88,8 @@ export const simulateMotionWasm = async (
   targetPositions,
   width,
   height,
-  side,
+  columns,
+  rows,
   frameCount,
 ) => {
   const wasm = await getWasm()
@@ -107,7 +116,8 @@ export const simulateMotionWasm = async (
     motionPathPtr,
     width,
     height,
-    side,
+    columns,
+    rows,
     count,
     frameCount,
     2,

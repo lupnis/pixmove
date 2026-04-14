@@ -9,12 +9,24 @@ const VORONOI_SETTLE_START = 0.9
 const VORONOI_SETTLE_DURATION = 0.1
 const VORONOI_SETTLE_STRENGTH = 0.42
 const VORONOI_FINAL_BACKOFF = 0.006
+const VORONOI_TAIL_ADJUST_START = 0.9
+const VORONOI_TAIL_ADJUST_DURATION = 0.1
+const VORONOI_TAIL_ADJUST_STRENGTH = 0.42
 
 const isFinitePoint = (point) =>
   Array.isArray(point)
   && point.length >= 2
   && Number.isFinite(point[0])
   && Number.isFinite(point[1])
+
+const resolveTailSeedDirection = (index) => {
+  const seed = (Math.imul((index + 1) ^ 0x9e3779b9, 2654435761) >>> 0)
+  const angle = (seed % 6283) / 1000
+  return {
+    x: Math.cos(angle),
+    y: Math.sin(angle),
+  }
+}
 
 let state = null
 
@@ -51,12 +63,74 @@ const samplePoint = (index, progress, out) => {
   const indexA = (frameA * state.count + index) * 2
   const indexB = (frameB * state.count + index) * 2
 
+  const targetX = state.targetPositions[base2]
+  const targetY = state.targetPositions[base2 + 1]
+
   let x = state.motionPath[indexA] + (state.motionPath[indexB] - state.motionPath[indexA]) * localT
   let y = state.motionPath[indexA + 1] + (state.motionPath[indexB + 1] - state.motionPath[indexA + 1]) * localT
 
   const settle = smoothstep((sampleProgress - VORONOI_SETTLE_START) / VORONOI_SETTLE_DURATION) * VORONOI_SETTLE_STRENGTH
-  x += (state.targetPositions[base2] - x) * settle
-  y += (state.targetPositions[base2 + 1] - y) * settle
+  x += (targetX - x) * settle
+  y += (targetY - y) * settle
+
+  const tailT = clamp((sampleProgress - VORONOI_TAIL_ADJUST_START) / VORONOI_TAIL_ADJUST_DURATION, 0, 1)
+
+  if (VORONOI_TAIL_ADJUST_STRENGTH > 0 && tailT > 0 && sampleProgress < 1) {
+    const reachBlend = smoothstep(clamp(tailT / 0.32, 0, 1))
+    x += (targetX - x) * reachBlend
+    y += (targetY - y) * reachBlend
+
+    const probeStep = clamp(Math.max(1 / Math.max(2, state.frameCount - 1), 0.01), 0.006, 0.06)
+    const probeProgress = clamp(sampleProgress - probeStep, 0, 1)
+    const probeFrameProgress = probeProgress * Math.max(0, state.frameCount - 1)
+    const probeFrameA = Math.floor(probeFrameProgress)
+    const probeFrameB = Math.min(state.frameCount - 1, probeFrameA + 1)
+    const probeLocalT = probeFrameProgress - probeFrameA
+    const probeIndexA = (probeFrameA * state.count + index) * 2
+    const probeIndexB = (probeFrameB * state.count + index) * 2
+
+    let probeX = state.motionPath[probeIndexA] + (state.motionPath[probeIndexB] - state.motionPath[probeIndexA]) * probeLocalT
+    let probeY = state.motionPath[probeIndexA + 1] + (state.motionPath[probeIndexB + 1] - state.motionPath[probeIndexA + 1]) * probeLocalT
+    const probeSettle = smoothstep((probeProgress - VORONOI_SETTLE_START) / VORONOI_SETTLE_DURATION) * VORONOI_SETTLE_STRENGTH
+    probeX += (targetX - probeX) * probeSettle
+    probeY += (targetY - probeY) * probeSettle
+
+    let dirX = targetX - probeX
+    let dirY = targetY - probeY
+    let dirLength = Math.hypot(dirX, dirY)
+
+    if (!Number.isFinite(dirLength) || dirLength < 0.0001) {
+      const seed = resolveTailSeedDirection(index)
+      dirX = seed.x
+      dirY = seed.y
+      dirLength = 1
+    }
+
+    dirX /= dirLength
+    dirY /= dirLength
+
+    const normalX = -dirY
+    const normalY = dirX
+    const motionScale = clamp(Math.hypot(targetX - probeX, targetY - probeY), 0.06, 0.9)
+    const decay = (1 - tailT) ** 1.2
+    const primaryWave = Math.sin(tailT * Math.PI * 1.5)
+    const secondaryWave = Math.sin(tailT * Math.PI * 2.4 + 0.65)
+    const amplitude = motionScale * 0.4 * VORONOI_TAIL_ADJUST_STRENGTH * decay
+
+    x += dirX * primaryWave * amplitude + normalX * secondaryWave * amplitude * 0.34
+    y += dirY * primaryWave * amplitude + normalY * secondaryWave * amplitude * 0.34
+
+    const offsetX = x - targetX
+    const offsetY = y - targetY
+    const offsetLength = Math.hypot(offsetX, offsetY)
+    const maxOffset = (0.32 + 0.22 * (1 - tailT)) * VORONOI_TAIL_ADJUST_STRENGTH
+
+    if (offsetLength > maxOffset && offsetLength > 0.0001) {
+      const ratio = maxOffset / offsetLength
+      x = targetX + offsetX * ratio
+      y = targetY + offsetY * ratio
+    }
+  }
 
   out[0] = x
   out[1] = y

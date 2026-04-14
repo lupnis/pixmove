@@ -8,30 +8,39 @@ const clampIndex = (value, maxExclusive) => {
   return clamp(Math.round(parsed), 0, Math.max(0, maxExclusive - 1))
 }
 
-const resolveGridSide = (grid, count) => {
-  const hinted = Number.isFinite(Number(grid?.side)) ? Math.round(Number(grid.side)) : 0
-  if (hinted > 1) return hinted
-  return Math.max(1, Math.round(Math.sqrt(Math.max(1, count))))
+const resolveGridDimensions = (grid, count) => {
+  const columns = Number.isFinite(Number(grid?.columns))
+    ? Math.max(1, Math.round(Number(grid.columns)))
+    : Number.isFinite(Number(grid?.side))
+      ? Math.max(1, Math.round(Number(grid.side)))
+      : Math.max(1, Math.round(Math.sqrt(Math.max(1, count))))
+  const rows = Number.isFinite(Number(grid?.rows))
+    ? Math.max(1, Math.round(Number(grid.rows)))
+    : Number.isFinite(Number(grid?.side))
+      ? Math.max(1, Math.round(Number(grid.side)))
+      : Math.max(1, Math.ceil(Math.max(1, count) / columns))
+
+  return { columns, rows }
 }
 
-const buildSnakePath = (side, count) => {
+const buildSnakePath = (columns, rows, count) => {
   const pathToCell = new Uint32Array(count)
   const cellToPath = new Uint32Array(count)
 
   let cursor = 0
 
-  for (let y = 0; y < side && cursor < count; y += 1) {
+  for (let y = 0; y < rows && cursor < count; y += 1) {
     if ((y & 1) === 0) {
-      for (let x = 0; x < side && cursor < count; x += 1) {
-        const cell = y * side + x
+      for (let x = 0; x < columns && cursor < count; x += 1) {
+        const cell = y * columns + x
         if (cell >= count) continue
         pathToCell[cursor] = cell
         cellToPath[cell] = cursor
         cursor += 1
       }
     } else {
-      for (let x = side - 1; x >= 0 && cursor < count; x -= 1) {
-        const cell = y * side + x
+      for (let x = columns - 1; x >= 0 && cursor < count; x -= 1) {
+        const cell = y * columns + x
         if (cell >= count) continue
         pathToCell[cursor] = cell
         cellToPath[cell] = cursor
@@ -157,16 +166,16 @@ export const getGridFlowRenderState = (grid, frameCountHint) => {
     }
   }
 
-  const side = resolveGridSide(grid, count)
+  const { columns, rows } = resolveGridDimensions(grid, count)
   const frameCount = resolveFlowFrameCount(count, frameCountHint ?? grid?.frameCount)
-  const cacheKey = `${side}:${frameCount}`
+  const cacheKey = `${columns}x${rows}:${frameCount}`
   const frameCache = getFrameCache(grid)
 
   if (frameCache.has(cacheKey)) {
     return frameCache.get(cacheKey)
   }
 
-  const { pathToCell, cellToPath } = buildSnakePath(side, count)
+  const { pathToCell, cellToPath } = buildSnakePath(columns, rows, count)
   const sourceCellByFrame = buildSourceCellFrames(grid, count, frameCount, pathToCell, cellToPath)
   const styleLut = buildSourceStyleLut(grid, count)
 

@@ -28,8 +28,6 @@ export const DEFAULT_MORPH_WIDTH = 480
 export const DEFAULT_MORPH_HEIGHT = 480
 export const MIN_RESOLUTION_PERCENT = 4
 export const MAX_RESOLUTION_PERCENT = 100
-export const MAX_GRID_CELLS_AT_100 = 32768
-export const MAX_CELL_RESOLUTION = Math.floor(Math.sqrt(MAX_GRID_CELLS_AT_100))
 
 const MIN_RENDER_CELL_BUDGET = 128
 const DEFAULT_GRID_CELL_BUDGET = 4200
@@ -348,14 +346,9 @@ const getRenderFrameState = (grid, rendererMode, maxCells) => {
   return state
 }
 
-export const resolveMaxGridCellCount = (width, height) => {
-  const targetReferenceSide = Math.max(16, Math.round(Math.min(width, height) || DEFAULT_MORPH_WIDTH))
-  const targetReferenceCells = targetReferenceSide * targetReferenceSide
-  return clamp(targetReferenceCells, 16 * 16, MAX_GRID_CELLS_AT_100)
-}
-
-const resolveMaxGridSideAt100 = (width, height) =>
-  Math.max(16, Math.floor(Math.sqrt(resolveMaxGridCellCount(width, height))))
+export const resolveMaxGridCellCount = (width, height) =>
+  Math.max(1, Math.round(Number(width) || DEFAULT_MORPH_WIDTH))
+  * Math.max(1, Math.round(Number(height) || DEFAULT_MORPH_HEIGHT))
 
 export const resolveCellResolution = (
   width,
@@ -363,7 +356,8 @@ export const resolveCellResolution = (
   resolutionPercent,
   maxResolutionPercent = MAX_RESOLUTION_PERCENT,
 ) => {
-  const maxGridSideAt100 = resolveMaxGridSideAt100(width, height)
+  const safeWidth = Math.max(1, Math.round(Number(width) || DEFAULT_MORPH_WIDTH))
+  const safeHeight = Math.max(1, Math.round(Number(height) || DEFAULT_MORPH_HEIGHT))
 
   const safeMaxPercent = Math.max(
     MIN_RESOLUTION_PERCENT,
@@ -379,17 +373,28 @@ export const resolveCellResolution = (
     safeMaxPercent,
   )
 
-  return clamp(
-    Math.round(maxGridSideAt100 * (safePercent / 100)),
-    16,
-    Math.min(MAX_CELL_RESOLUTION, maxGridSideAt100),
+  const columns = clamp(
+    Math.round(safeWidth * (safePercent / 100)),
+    1,
+    safeWidth,
   )
+  const rows = clamp(
+    Math.round(safeHeight * (safePercent / 100)),
+    1,
+    safeHeight,
+  )
+
+  return {
+    width: columns,
+    height: rows,
+    count: columns * rows,
+  }
 }
 
 export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
   const {
-    width = DEFAULT_MORPH_WIDTH,
-    height = DEFAULT_MORPH_HEIGHT,
+    width,
+    height,
     resolutionReferenceWidth = width,
     resolutionReferenceHeight = height,
     resolutionPercent = 8,
@@ -408,15 +413,19 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
 
   ensureNotAborted()
 
+  const rasterWidth = Math.max(2, Math.round(Number(width) || Number(resolutionReferenceWidth) || DEFAULT_MORPH_WIDTH))
+  const rasterHeight = Math.max(2, Math.round(Number(height) || Number(resolutionReferenceHeight) || DEFAULT_MORPH_HEIGHT))
+  const safeReferenceWidth = Math.max(2, Math.round(Number(resolutionReferenceWidth) || rasterWidth))
+  const safeReferenceHeight = Math.max(2, Math.round(Number(resolutionReferenceHeight) || rasterHeight))
   const safeMaxPercent = Math.max(
     MIN_RESOLUTION_PERCENT,
     Math.min(MAX_RESOLUTION_PERCENT, Number(maxResolutionPercent) || MAX_RESOLUTION_PERCENT),
   )
   const safePercent = clamp(Number(resolutionPercent) || 8, MIN_RESOLUTION_PERCENT, safeMaxPercent)
-  const maxGridCellCount = resolveMaxGridCellCount(resolutionReferenceWidth, resolutionReferenceHeight)
+  const maxGridCellCount = resolveMaxGridCellCount(safeReferenceWidth, safeReferenceHeight)
   const resolution = resolveCellResolution(
-    resolutionReferenceWidth,
-    resolutionReferenceHeight,
+    safeReferenceWidth,
+    safeReferenceHeight,
     safePercent,
     safeMaxPercent,
   )
@@ -430,12 +439,12 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
   onProgress?.('loading', 1)
 
   onProgress?.('rasterizing_a', 0)
-  const sourceRaster = rasterizeImage(sourceImage, width, height)
+  const sourceRaster = rasterizeImage(sourceImage, rasterWidth, rasterHeight)
   ensureNotAborted()
   onProgress?.('rasterizing_a', 1)
 
   onProgress?.('rasterizing_b', 0)
-  const targetRaster = rasterizeImage(targetImage, width, height)
+  const targetRaster = rasterizeImage(targetImage, rasterWidth, rasterHeight)
   ensureNotAborted()
   onProgress?.('rasterizing_b', 1)
 
@@ -447,9 +456,10 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
     {
       sourcePixels: sourceRaster.pixels.buffer,
       targetPixels: targetRaster.pixels.buffer,
-      width,
-      height,
-      resolution,
+      width: rasterWidth,
+      height: rasterHeight,
+      gridWidth: resolution.width,
+      gridHeight: resolution.height,
       proximityFactor,
       simulationFrames,
     },
@@ -465,8 +475,8 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
   onProgress?.('done', 1)
 
   return {
-    width,
-    height,
+    width: rasterWidth,
+    height: rasterHeight,
     sourceRasterUrl: sourceRaster.dataUrl,
     targetRasterUrl: targetRaster.dataUrl,
     sourceAverage,
@@ -477,12 +487,15 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
       resolutionPercent: safePercent,
       maxResolutionPercent: safeMaxPercent,
       maxGridCellCount,
-      maxGridSide: Math.floor(Math.sqrt(maxGridCellCount)),
-      referenceWidth: Math.max(2, Math.round(Number(resolutionReferenceWidth) || width)),
-      referenceHeight: Math.max(2, Math.round(Number(resolutionReferenceHeight) || height)),
+      maxGridWidth: safeReferenceWidth,
+      maxGridHeight: safeReferenceHeight,
+      referenceWidth: safeReferenceWidth,
+      referenceHeight: safeReferenceHeight,
       pointCount: workerResult.stats.cellCount,
       cellCount: workerResult.stats.cellCount,
-      resolution: workerResult.grid.side,
+      resolution: workerResult.grid.columns,
+      resolutionWidth: workerResult.grid.columns,
+      resolutionHeight: workerResult.grid.rows,
       proximityFactor,
       simulationFrames,
       generationCount: workerResult.stats.generationCount,
@@ -492,9 +505,8 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
   }
 }
 
-const drawGridCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => {
+const drawGridCells = (ctx, frameState, grid, p, scale, offsetX, offsetY, revealProgress = 1) => {
   const { renderData, sampleOut } = frameState
-  const revealProgress = resolveRevealProgress(p)
   const lockToTarget = p >= 0.985
   const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
   const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
@@ -568,11 +580,10 @@ const drawGridCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => {
   }
 }
 
-const drawGridFlowCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => {
+const drawGridFlowCells = (ctx, frameState, grid, p, scale, offsetX, offsetY, revealProgress = 1) => {
   const flowState = frameState.gridFlowState
   if (!flowState?.count || !flowState.sourceCellByFrame?.length) return
   if (!frameState.flowSmoothX || !frameState.flowSmoothY) return
-  const revealProgress = resolveRevealProgress(p)
 
   const count = flowState.count
   const frameCount = Math.max(2, flowState.frameCount || 2)
@@ -596,7 +607,6 @@ const drawGridFlowCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) =>
   const smoothY = frameState.flowSmoothY
 
   for (let sourceIndex = 0; sourceIndex < count; sourceIndex += 1) {
-    if (!isSourceRevealed(sourceIndex, revealProgress)) continue
     const cellA = flowState.sourceCellByFrame[offsetA + sourceIndex]
     const cellB = flowState.sourceCellByFrame[offsetB + sourceIndex]
 
@@ -642,6 +652,8 @@ const drawGridFlowCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) =>
     const centerX = smoothX[sourceIndex]
     const centerY = smoothY[sourceIndex]
 
+    if (!isSourceRevealed(sourceIndex, revealProgress)) continue
+
     const overlapWorld = overlapPxBase / Math.max(0.0001, scale)
     const strokeWidth = Math.max(1, overlapPxBase * 1.2)
 
@@ -679,10 +691,9 @@ const expandPolygonForOverlap = (points, centerX, centerY, radialScale, overlapW
   }
 }
 
-const drawPolygonCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => {
+const drawPolygonCells = (ctx, frameState, grid, p, scale, offsetX, offsetY, revealProgress = 1) => {
   const { renderData, shapeBuffers, sampleOut, polygonPoints } = frameState
   if (!shapeBuffers?.count) return
-  const revealProgress = resolveRevealProgress(p)
 
   const lockToTarget = p >= 0.985
   const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
@@ -774,11 +785,10 @@ const drawPolygonCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => 
   ctx.miterLimit = prevMiterLimit
 }
 
-const drawJamCells = (ctx, frameState, grid, width, height, p, scale, offsetX, offsetY) => {
+const drawJamCells = (ctx, frameState, grid, width, height, p, scale, offsetX, offsetY, revealProgress = 1) => {
   const { renderData, coords, jamState, sampleOut } = frameState
   if (!jamState?.count || !coords?.length) return
 
-  const revealProgress = resolveRevealProgress(p)
   if (revealProgress <= 0.001) return
 
   sampleJamCenters(grid, jamState, p, coords, sampleOut, width, height)
@@ -833,9 +843,8 @@ const drawJamCells = (ctx, frameState, grid, width, height, p, scale, offsetX, o
   ctx.miterLimit = prevMiterLimit
 }
 
-const drawVoronoiCells = (ctx, frameState, grid, width, height, p, scale, offsetX, offsetY) => {
+const drawVoronoiCells = (ctx, frameState, grid, width, height, p, scale, offsetX, offsetY, revealProgress = 1) => {
   const { renderData, coords, sampleOut } = frameState
-  const revealProgress = resolveRevealProgress(p)
 
   for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
     const sourceIndex = renderData.indices[localIndex]
@@ -931,8 +940,9 @@ export const drawMorphFrame = (ctx, morphData, progress, options = {}) => {
 
   const sourceOverlayEnabled = Boolean(options.sourceOverlayEnabled)
   const sourceOverlayImage = options.sourceOverlayImage
+  const sourceOverlayActive = sourceOverlayEnabled && Boolean(sourceOverlayImage)
 
-  if (sourceOverlayEnabled && sourceOverlayImage) {
+  if (sourceOverlayActive) {
     const sourceOverlayAlpha = resolveSourceOverlayAlpha(p)
 
     if (sourceOverlayAlpha > 0.001) {
@@ -942,6 +952,8 @@ export const drawMorphFrame = (ctx, morphData, progress, options = {}) => {
       ctx.restore()
     }
   }
+
+  const revealProgress = sourceOverlayActive ? resolveRevealProgress(p) : 1
 
   const grid = morphData.grid
   const rendererMode = normalizeRendererMode(options.rendererMode ?? DEFAULT_RENDERER_MODE)
@@ -954,26 +966,48 @@ export const drawMorphFrame = (ctx, morphData, progress, options = {}) => {
   }
 
   if (rendererMode === RENDERER_MODE_GRID) {
-    drawGridCells(ctx, frameState, grid, p, scale, offsetX, offsetY)
+    drawGridCells(ctx, frameState, grid, p, scale, offsetX, offsetY, revealProgress)
     return
   }
 
   if (rendererMode === RENDERER_MODE_GRID_FLOW) {
-    drawGridFlowCells(ctx, frameState, grid, p, scale, offsetX, offsetY)
+    drawGridFlowCells(ctx, frameState, grid, p, scale, offsetX, offsetY, revealProgress)
     return
   }
 
   if (rendererMode === RENDERER_MODE_JAM) {
-    drawJamCells(ctx, frameState, grid, morphData.width, morphData.height, p, scale, offsetX, offsetY)
+    drawJamCells(
+      ctx,
+      frameState,
+      grid,
+      morphData.width,
+      morphData.height,
+      p,
+      scale,
+      offsetX,
+      offsetY,
+      revealProgress,
+    )
     return
   }
 
   if (rendererMode === RENDERER_MODE_POLYGON) {
-    drawPolygonCells(ctx, frameState, grid, p, scale, offsetX, offsetY)
+    drawPolygonCells(ctx, frameState, grid, p, scale, offsetX, offsetY, revealProgress)
     return
   }
 
-  drawVoronoiCells(ctx, frameState, grid, morphData.width, morphData.height, p, scale, offsetX, offsetY)
+  drawVoronoiCells(
+    ctx,
+    frameState,
+    grid,
+    morphData.width,
+    morphData.height,
+    p,
+    scale,
+    offsetX,
+    offsetY,
+    revealProgress,
+  )
 }
 
 export const renderMorphThumbnail = (morphData, progress = 0.52, options = {}) => {

@@ -9,22 +9,23 @@ const colorDistanceSq = (aBase, bBase, aColors, bColors) => {
   return dr * dr + dg * dg + db * db
 }
 
-const collectGridCells = (pixels, width, height, side) => {
-  const count = side * side
+const collectGridCells = (pixels, width, height, columns, rows, onProgress) => {
+  const count = columns * rows
   const bounds = new Uint16Array(count * 4)
   const colors = new Uint8Array(count * 4)
   const centers = new Float32Array(count * 2)
   const rasterWidth = Math.max(1, Math.round(width))
   const rasterHeight = Math.max(1, Math.round(height))
+  const progressStep = Math.max(1, Math.floor(rows / 12))
 
-  for (let gy = 0; gy < side; gy += 1) {
-    const y0 = Math.floor((gy * rasterHeight) / side)
-    const y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * rasterHeight) / side))
+  for (let gy = 0; gy < rows; gy += 1) {
+    const y0 = Math.floor((gy * rasterHeight) / rows)
+    const y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * rasterHeight) / rows))
 
-    for (let gx = 0; gx < side; gx += 1) {
-      const x0 = Math.floor((gx * rasterWidth) / side)
-      const x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * rasterWidth) / side))
-      const index = gy * side + gx
+    for (let gx = 0; gx < columns; gx += 1) {
+      const x0 = Math.floor((gx * rasterWidth) / columns)
+      const x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * rasterWidth) / columns))
+      const index = gy * columns + gx
       const base4 = index * 4
       const base2 = index * 2
 
@@ -63,6 +64,10 @@ const collectGridCells = (pixels, width, height, side) => {
       centers[base2] = (x0 + x1) * 0.5
       centers[base2 + 1] = (y0 + y1) * 0.5
     }
+
+    if (onProgress && (((gy + 1) % progressStep) === 0 || gy === rows - 1)) {
+      onProgress((gy + 1) / rows)
+    }
   }
 
   return {
@@ -73,38 +78,44 @@ const collectGridCells = (pixels, width, height, side) => {
   }
 }
 
-const computeTargetWeights = (targetColors, side) => {
-  const count = side * side
+const computeTargetWeights = (targetColors, columns, rows, onProgress) => {
+  const count = columns * rows
   const weights = new Float32Array(count)
   let minWeight = Number.POSITIVE_INFINITY
   let maxWeight = 0
+  const progressStep = Math.max(1, Math.floor(rows / 10))
 
-  for (let index = 0; index < count; index += 1) {
-    const x = index % side
-    const y = (index / side) | 0
-    const base = index * 4
+  for (let y = 0; y < rows; y += 1) {
+    for (let x = 0; x < columns; x += 1) {
+      const index = y * columns + x
+      const base = index * 4
 
-    let contrast = 0
-    let samples = 0
+      let contrast = 0
+      let samples = 0
 
-    for (let oy = -1; oy <= 1; oy += 1) {
-      for (let ox = -1; ox <= 1; ox += 1) {
-        if (!ox && !oy) continue
+      for (let oy = -1; oy <= 1; oy += 1) {
+        for (let ox = -1; ox <= 1; ox += 1) {
+          if (!ox && !oy) continue
 
-        const nx = x + ox
-        const ny = y + oy
-        if (nx < 0 || ny < 0 || nx >= side || ny >= side) continue
+          const nx = x + ox
+          const ny = y + oy
+          if (nx < 0 || ny < 0 || nx >= columns || ny >= rows) continue
 
-        contrast += colorDistanceSq(base, (ny * side + nx) * 4, targetColors, targetColors)
-        samples += 1
+          contrast += colorDistanceSq(base, (ny * columns + nx) * 4, targetColors, targetColors)
+          samples += 1
+        }
       }
+
+      const edgeStrength = contrast / Math.max(1, samples)
+      const weight = 1 + clamp(edgeStrength / 24000, 0, 3.25)
+      weights[index] = weight
+      minWeight = Math.min(minWeight, weight)
+      maxWeight = Math.max(maxWeight, weight)
     }
 
-    const edgeStrength = contrast / Math.max(1, samples)
-    const weight = 1 + clamp(edgeStrength / 24000, 0, 3.25)
-    weights[index] = weight
-    minWeight = Math.min(minWeight, weight)
-    maxWeight = Math.max(maxWeight, weight)
+    if (onProgress && (((y + 1) % progressStep) === 0 || y === rows - 1)) {
+      onProgress((y + 1) / rows)
+    }
   }
 
   return {
@@ -120,7 +131,8 @@ const matchPayload = async (payload) => {
     targetPixels,
     width,
     height,
-    resolution,
+    gridWidth,
+    gridHeight,
     proximityFactor,
     simulationFrames,
   } = payload
@@ -130,23 +142,38 @@ const matchPayload = async (payload) => {
 
   const rasterWidth = Math.max(1, Math.round(width))
   const rasterHeight = Math.max(1, Math.round(height))
+  const columns = Math.max(1, Math.round(gridWidth))
+  const rows = Math.max(1, Math.round(gridHeight))
 
   postMessage({ type: 'progress', id: payload.id, progress: 0, phase: 'cell_sampling_a' })
-  const sourceGrid = collectGridCells(source, rasterWidth, rasterHeight, resolution)
+  const sourceGrid = collectGridCells(source, rasterWidth, rasterHeight, columns, rows, (progress) => {
+    postMessage({ type: 'progress', id: payload.id, progress, phase: 'cell_sampling_a' })
+  })
   postMessage({ type: 'progress', id: payload.id, progress: 1, phase: 'cell_sampling_a' })
 
   postMessage({ type: 'progress', id: payload.id, progress: 0, phase: 'cell_sampling_b' })
-  const targetGrid = collectGridCells(target, rasterWidth, rasterHeight, resolution)
+  const targetGrid = collectGridCells(target, rasterWidth, rasterHeight, columns, rows, (progress) => {
+    postMessage({ type: 'progress', id: payload.id, progress, phase: 'cell_sampling_b' })
+  })
   postMessage({ type: 'progress', id: payload.id, progress: 1, phase: 'cell_sampling_b' })
 
-  const targetWeightInfo = computeTargetWeights(targetGrid.colors, resolution)
+  postMessage({ type: 'progress', id: payload.id, progress: 0.04, phase: 'assignment' })
+  const targetWeightInfo = computeTargetWeights(targetGrid.colors, columns, rows, (progress) => {
+    postMessage({
+      type: 'progress',
+      id: payload.id,
+      progress: 0.04 + progress * 0.08,
+      phase: 'assignment',
+    })
+  })
+  postMessage({ type: 'progress', id: payload.id, progress: 0.12, phase: 'assignment' })
 
-  postMessage({ type: 'progress', id: payload.id, progress: 0, phase: 'assignment' })
   const assignment = await computeAssignmentsWasm(
     sourceGrid.colors,
     targetGrid.colors,
     targetWeightInfo.weights,
-    resolution,
+    columns,
+    rows,
     proximityFactor,
   )
 
@@ -169,7 +196,8 @@ const matchPayload = async (payload) => {
     targetPositions,
     rasterWidth,
     rasterHeight,
-    resolution,
+    columns,
+    rows,
     simulationFrames,
   )
 
@@ -177,7 +205,9 @@ const matchPayload = async (payload) => {
 
   return {
     grid: {
-      side: resolution,
+      side: columns,
+      columns,
+      rows,
       count: sourceGrid.count,
       frameCount: simulationFrames,
       cellBounds: sourceGrid.bounds,

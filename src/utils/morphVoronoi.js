@@ -36,8 +36,21 @@ const normalizeBudget = (rawBudget, count) => {
 	return clamp(parsed, MIN_VORONOI_BUDGET, Math.max(MIN_VORONOI_BUDGET, count))
 }
 
-const buildSampleIndices = (side, count, budget) => {
-	if (!count || !side) return new Uint32Array(0)
+const resolveGridDimensions = (grid, count) => {
+	const columns = Math.max(
+		1,
+		Math.round(Number(grid?.columns) || Number(grid?.side) || Math.sqrt(Math.max(1, count))),
+	)
+	const rows = Math.max(
+		1,
+		Math.round(Number(grid?.rows) || Number(grid?.side) || Math.ceil(Math.max(1, count) / columns)),
+	)
+
+	return { columns, rows }
+}
+
+const buildSampleIndices = (columns, rows, count, budget) => {
+	if (!count || !columns || !rows) return new Uint32Array(0)
 
 	if (count <= budget) {
 		const all = new Uint32Array(count)
@@ -47,8 +60,11 @@ const buildSampleIndices = (side, count, budget) => {
 		return all
 	}
 
-	const targetAxisCount = Math.max(1, Math.sqrt(budget))
-	const stride = Math.max(1, Math.ceil(side / targetAxisCount))
+	const aspect = columns / Math.max(1, rows)
+	const targetColumns = Math.max(1, Math.round(Math.sqrt(budget * aspect)))
+	const targetRows = Math.max(1, Math.round(budget / targetColumns))
+	const strideX = Math.max(1, Math.ceil(columns / targetColumns))
+	const strideY = Math.max(1, Math.ceil(rows / targetRows))
 	const sampled = []
 	const seen = new Set()
 
@@ -59,21 +75,22 @@ const buildSampleIndices = (side, count, budget) => {
 		sampled.push(index)
 	}
 
-	for (let y = 0; y < side; y += stride) {
-		for (let x = 0; x < side; x += stride) {
-			pushIndex(y * side + x)
+	for (let y = 0; y < rows; y += strideY) {
+		for (let x = 0; x < columns; x += strideX) {
+			pushIndex(y * columns + x)
 		}
 	}
 
 	// Keep boundary cells so silhouettes stay stable after down-sampling.
-	const last = side - 1
-	for (let x = 0; x < side; x += stride) {
-		pushIndex(last * side + x)
+	const lastX = columns - 1
+	const lastY = rows - 1
+	for (let x = 0; x < columns; x += strideX) {
+		pushIndex(lastY * columns + x)
 	}
-	for (let y = 0; y < side; y += stride) {
-		pushIndex(y * side + last)
+	for (let y = 0; y < rows; y += strideY) {
+		pushIndex(y * columns + lastX)
 	}
-	pushIndex(last * side + last)
+	pushIndex(lastY * columns + lastX)
 
 	if (sampled.length <= budget) {
 		return Uint32Array.from(sampled)
@@ -106,7 +123,7 @@ export const getVoronoiRenderData = (grid, maxCells) => {
 	const totalCount = Number(grid?.count) || 0
 	if (!totalCount) return EMPTY_RENDER_DATA
 
-	const side = Math.max(1, Math.round(Number(grid.side) || Math.sqrt(totalCount)))
+	const { columns, rows } = resolveGridDimensions(grid, totalCount)
 	const budget = normalizeBudget(maxCells, totalCount)
 	const cacheByBudget = getBudgetCache(renderDataCache, grid)
 
@@ -114,7 +131,7 @@ export const getVoronoiRenderData = (grid, maxCells) => {
 		return cacheByBudget.get(budget)
 	}
 
-	const indices = buildSampleIndices(side, totalCount, budget)
+	const indices = buildSampleIndices(columns, rows, totalCount, budget)
 	const count = indices.length
 	const colors = new Uint32Array(count)
 	const alphas = new Float32Array(count)
@@ -152,7 +169,7 @@ export const getVoronoiFrameSample = (grid, maxCells) => {
 	const renderData = getVoronoiRenderData(grid, maxCells)
 	if (!renderData.count) return EMPTY_FRAME_SAMPLE
 
-	const side = Math.max(1, Math.round(Number(grid.side) || Math.sqrt(totalCount)))
+	const { columns, rows } = resolveGridDimensions(grid, totalCount)
 	const budget = normalizeBudget(maxCells, totalCount)
 	const cacheByBudget = getBudgetCache(frameSampleCache, grid)
 
@@ -189,7 +206,8 @@ export const getVoronoiFrameSample = (grid, maxCells) => {
 		sourcePositions,
 		targetPositions,
 		motionPath,
-		side,
+		columns,
+		rows,
 	}
 
 	cacheByBudget.set(budget, frameSample)
