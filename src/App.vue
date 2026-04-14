@@ -1107,8 +1107,8 @@ const detailToMorphOptions = (density) => {
     resolutionReferenceHeight: targetResolutionBase.value.height,
     resolutionPercent: d,
     maxResolutionPercent: maxDensity,
-    simulationFrames: clamp(Math.round(72 + ratio * 40), 72, 132),
-    proximityFactor: 7.8 - ratio * 2.6,
+    simulationFrames: clamp(Math.round(88 + ratio * 56), 88, 144),
+    proximityFactor: 10.2 - ratio * 2.4,
   }
 }
 

@@ -32,6 +32,11 @@ function pairOffset(ptr: usize, index: i32): usize {
 }
 
 @inline
+function motionOffset(ptr: usize, frame: i32, count: i32, index: i32): usize {
+  return ptr + (<usize>(frame * count + index) << 3)
+}
+
+@inline
 function scalarF32Offset(ptr: usize, index: i32): usize {
   return ptr + (<usize>index << 2)
 }
@@ -237,31 +242,41 @@ export function simulateMotion(
   frameCount: i32,
   substeps: i32,
 ): void {
+  if (count <= 0) {
+    return
+  }
+
+  const safeSide = maxI32(1, side)
+  const safeFrames = maxI32(1, frameCount)
+  const safeSubsteps = maxI32(1, substeps)
   const positionsBytes = <usize>(count << 3)
   const positionsPtr = alloc(positionsBytes)
   const velocitiesPtr = alloc(positionsBytes)
   const accelerationsPtr = alloc(positionsBytes)
   const agesPtr = alloc(<usize>(count << 1))
   const nextLinkPtr = alloc(<usize>(count << 2))
-  const gridHeadPtr = alloc(<usize>((side * side) << 2))
+  const gridHeadPtr = alloc(<usize>((safeSide * safeSide) << 2))
 
   memory.copy(positionsPtr, sourcePositionsPtr, positionsBytes)
   memory.fill(velocitiesPtr, 0, positionsBytes)
   memory.fill(accelerationsPtr, 0, positionsBytes)
   memory.fill(agesPtr, 0, <usize>(count << 1))
 
-  const pixelSize: f32 = Mathf.min(width, height) / <f32>side
+  const pixelSize: f32 = Mathf.min(width, height) / <f32>safeSide
   const personalSpace: f32 = pixelSize * <f32>0.95
   const wallLimit: f32 = personalSpace * <f32>0.5
-  const maxVelocity: f32 = 6.0
+  const maxVelocity: f32 = clampF32(pixelSize * <f32>0.78, <f32>1.1, <f32>6.0)
+  const maxAcceleration: f32 = clampF32(pixelSize * <f32>0.95, <f32>0.4, <f32>3.2)
+  const destinationForceScale: f32 = clampF32(pixelSize / <f32>8.0, <f32>0.35, <f32>1.0)
   const alignmentFactor: f32 = 0.8
-  const sideLength: f32 = Mathf.max(width, height)
+  const sideLength: f32 = Mathf.max(<f32>1.0, Mathf.max(width, height))
 
-  for (let frame = 0; frame < frameCount; frame += 1) {
-    memory.copy(motionPathPtr + <usize>(frame * count << 3), positionsPtr, positionsBytes)
+  // Frame 0 always starts from the exact source layout.
+  memory.copy(motionPathPtr, positionsPtr, positionsBytes)
 
-    for (let step = 0; step < substeps; step += 1) {
-      for (let g = 0, total = side * side; g < total; g += 1) {
+  for (let frame = 1; frame < safeFrames; frame += 1) {
+    for (let step = 0; step < safeSubsteps; step += 1) {
+      for (let g = 0, total = safeSide * safeSide; g < total; g += 1) {
         store<i32>(scalarF32Offset(gridHeadPtr, g), -1)
       }
 
@@ -273,9 +288,9 @@ export function simulateMotion(
         const targetPtr = pairOffset(targetPositionsPtr, index)
         const x = load<f32>(posPtr)
         const y = load<f32>(posPtr + 4)
-        const gx = clampI32(<i32>(x / pixelSize), 0, side - 1)
-        const gy = clampI32(<i32>(y / pixelSize), 0, side - 1)
-        const cellIndex = gy * side + gx
+        const gx = clampI32(<i32>(x / pixelSize), 0, safeSide - 1)
+        const gy = clampI32(<i32>(y / pixelSize), 0, safeSide - 1)
+        const cellIndex = gy * safeSide + gx
 
         store<i32>(scalarF32Offset(nextLinkPtr, index), load<i32>(scalarF32Offset(gridHeadPtr, cellIndex)))
         store<i32>(scalarF32Offset(gridHeadPtr, cellIndex), index)
@@ -301,8 +316,8 @@ export function simulateMotion(
         const dy: f32 = load<f32>(targetPtr + 4) - y
         const dist: f32 = Mathf.sqrt(dx * dx + dy * dy)
 
-        ax += (dx * dist * factor) / sideLength
-        ay += (dy * dist * factor) / sideLength
+        ax += ((dx * dist * factor) / sideLength) * destinationForceScale
+        ay += ((dy * dist * factor) / sideLength) * destinationForceScale
 
         store<f32>(accPtr, ax)
         store<f32>(accPtr + 4, ay)
@@ -314,8 +329,8 @@ export function simulateMotion(
         const accPtr = pairOffset(accelerationsPtr, index)
         const x = load<f32>(posPtr)
         const y = load<f32>(posPtr + 4)
-        const gx = clampI32(<i32>(x / pixelSize), 0, side - 1)
-        const gy = clampI32(<i32>(y / pixelSize), 0, side - 1)
+        const gx = clampI32(<i32>(x / pixelSize), 0, safeSide - 1)
+        const gy = clampI32(<i32>(y / pixelSize), 0, safeSide - 1)
 
         let ax: f32 = load<f32>(accPtr)
         let ay: f32 = load<f32>(accPtr + 4)
@@ -328,9 +343,9 @@ export function simulateMotion(
             const nx = gx + ox
             const ny = gy + oy
 
-            if (nx < 0 || ny < 0 || nx >= side || ny >= side) continue
+            if (nx < 0 || ny < 0 || nx >= safeSide || ny >= safeSide) continue
 
-            let other = load<i32>(scalarF32Offset(gridHeadPtr, ny * side + nx))
+            let other = load<i32>(scalarF32Offset(gridHeadPtr, ny * safeSide + nx))
 
             while (other != -1) {
               if (other != index) {
@@ -366,6 +381,13 @@ export function simulateMotion(
           ay += (avgVY - load<f32>(velPtr + 4)) * alignmentFactor
         }
 
+        const accDist: f32 = Mathf.sqrt(ax * ax + ay * ay)
+        if (accDist > maxAcceleration && accDist > <f32>0.0001) {
+          const limited = maxAcceleration / accDist
+          ax *= limited
+          ay *= limited
+        }
+
         store<f32>(accPtr, ax)
         store<f32>(accPtr + 4, ay)
       }
@@ -384,6 +406,83 @@ export function simulateMotion(
         store<f32>(posPtr, clampF32(load<f32>(posPtr) + nextVX, 0.0, width))
         store<f32>(posPtr + 4, clampF32(load<f32>(posPtr + 4) + nextVY, 0.0, height))
         store<u16>(agePtr, <u16>(load<u16>(agePtr) + 1))
+      }
+    }
+
+    memory.copy(motionPathPtr + <usize>(frame * count << 3), positionsPtr, positionsBytes)
+  }
+
+  if (safeFrames > 1) {
+    const frameSpan: f32 = <f32>(safeFrames - 1)
+    const minStep: f32 = Mathf.max(<f32>0.12, pixelSize * <f32>0.32)
+
+    for (let index = 0; index < count; index += 1) {
+      const sourcePtr = pairOffset(sourcePositionsPtr, index)
+      const targetPtr = pairOffset(targetPositionsPtr, index)
+
+      const sourceX = clampF32(load<f32>(sourcePtr), 0.0, width)
+      const sourceY = clampF32(load<f32>(sourcePtr + 4), 0.0, height)
+      const targetX = clampF32(load<f32>(targetPtr), 0.0, width)
+      const targetY = clampF32(load<f32>(targetPtr + 4), 0.0, height)
+
+      const pathDx = targetX - sourceX
+      const pathDy = targetY - sourceY
+      const pathDist = Mathf.sqrt(pathDx * pathDx + pathDy * pathDy)
+      const avgStep = pathDist / frameSpan
+      const maxStep = Mathf.max(minStep, avgStep * <f32>1.85)
+
+      const firstPtr = motionOffset(motionPathPtr, 0, count, index)
+      const lastPtr = motionOffset(motionPathPtr, safeFrames - 1, count, index)
+
+      store<f32>(firstPtr, sourceX)
+      store<f32>(firstPtr + 4, sourceY)
+      store<f32>(lastPtr, targetX)
+      store<f32>(lastPtr + 4, targetY)
+
+      for (let frame = safeFrames - 2; frame > 0; frame -= 1) {
+        const currentPtr = motionOffset(motionPathPtr, frame, count, index)
+        const nextPtr = motionOffset(motionPathPtr, frame + 1, count, index)
+
+        let currentX = load<f32>(currentPtr)
+        let currentY = load<f32>(currentPtr + 4)
+        const nextX = load<f32>(nextPtr)
+        const nextY = load<f32>(nextPtr + 4)
+
+        const dx = nextX - currentX
+        const dy = nextY - currentY
+        const dist = Mathf.sqrt(dx * dx + dy * dy)
+
+        if (dist > maxStep && dist > <f32>0.0001) {
+          const limited = maxStep / dist
+          currentX = nextX - dx * limited
+          currentY = nextY - dy * limited
+        }
+
+        store<f32>(currentPtr, clampF32(currentX, 0.0, width))
+        store<f32>(currentPtr + 4, clampF32(currentY, 0.0, height))
+      }
+
+      for (let frame = 1; frame < safeFrames - 1; frame += 1) {
+        const previousPtr = motionOffset(motionPathPtr, frame - 1, count, index)
+        const currentPtr = motionOffset(motionPathPtr, frame, count, index)
+
+        const prevX = load<f32>(previousPtr)
+        const prevY = load<f32>(previousPtr + 4)
+        let currentX = load<f32>(currentPtr)
+        let currentY = load<f32>(currentPtr + 4)
+
+        const dx = currentX - prevX
+        const dy = currentY - prevY
+        const dist = Mathf.sqrt(dx * dx + dy * dy)
+
+        if (dist > maxStep && dist > <f32>0.0001) {
+          const limited = maxStep / dist
+          currentX = prevX + dx * limited
+          currentY = prevY + dy * limited
+        }
+
+        store<f32>(currentPtr, clampF32(currentX, 0.0, width))
+        store<f32>(currentPtr + 4, clampF32(currentY, 0.0, height))
       }
     }
   }

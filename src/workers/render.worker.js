@@ -1,11 +1,14 @@
 import { Delaunay } from 'd3-delaunay'
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
-
 const smoothstep = (t) => {
   const value = clamp(t, 0, 1)
   return value * value * (3 - 2 * value)
 }
+const VORONOI_SETTLE_START = 0.9
+const VORONOI_SETTLE_DURATION = 0.1
+const VORONOI_SETTLE_STRENGTH = 0.42
+const VORONOI_FINAL_BACKOFF = 0.006
 
 const isFinitePoint = (point) =>
   Array.isArray(point)
@@ -23,21 +26,24 @@ const samplePoint = (index, progress, out) => {
   }
 
   const p = clamp(progress, 0, 1)
+  const sampleProgress = p >= 1 && state.frameCount > 1
+    ? 1 - VORONOI_FINAL_BACKOFF
+    : p
   const base2 = index * 2
 
-  if (p <= 0) {
+  if (sampleProgress <= 0) {
     out[0] = state.sourcePositions[base2]
     out[1] = state.sourcePositions[base2 + 1]
     return
   }
 
-  if (p >= 1) {
+  if (sampleProgress >= 1) {
     out[0] = state.targetPositions[base2]
     out[1] = state.targetPositions[base2 + 1]
     return
   }
 
-  const frameProgress = p * Math.max(0, state.frameCount - 1)
+  const frameProgress = sampleProgress * Math.max(0, state.frameCount - 1)
   const frameA = Math.floor(frameProgress)
   const frameB = Math.min(state.frameCount - 1, frameA + 1)
   const localT = frameProgress - frameA
@@ -48,7 +54,7 @@ const samplePoint = (index, progress, out) => {
   let x = state.motionPath[indexA] + (state.motionPath[indexB] - state.motionPath[indexA]) * localT
   let y = state.motionPath[indexA + 1] + (state.motionPath[indexB + 1] - state.motionPath[indexA + 1]) * localT
 
-  const settle = smoothstep((p - 0.78) / 0.22)
+  const settle = smoothstep((sampleProgress - VORONOI_SETTLE_START) / VORONOI_SETTLE_DURATION) * VORONOI_SETTLE_STRENGTH
   x += (state.targetPositions[base2] - x) * settle
   y += (state.targetPositions[base2 + 1] - y) * settle
 
@@ -71,8 +77,8 @@ const buildVoronoiMesh = (progress) => {
   for (let index = 0; index < count; index += 1) {
     samplePoint(index, progress, point)
     const base2 = index * 2
-    coords[base2] = point[0]
-    coords[base2 + 1] = point[1]
+    coords[base2] = clamp(point[0], 0, state.width)
+    coords[base2 + 1] = clamp(point[1], 0, state.height)
   }
 
   const delaunay = new Delaunay(coords)

@@ -28,7 +28,7 @@ export const MAX_CELL_RESOLUTION = Math.floor(Math.sqrt(MAX_GRID_CELLS_AT_100))
 const MIN_RENDER_CELL_BUDGET = 128
 const DEFAULT_GRID_CELL_BUDGET = 4200
 const DEFAULT_POLYGON_CELL_BUDGET = 3200
-const DEFAULT_VORONOI_CELL_BUDGET = 2600
+const DEFAULT_VORONOI_CELL_BUDGET = 7200
 
 const renderFrameStateCache = new WeakMap()
 
@@ -239,6 +239,24 @@ const resolveRenderBudget = (rendererMode, renderCellBudget) => {
   )
 }
 
+const resolveModeBudget = (grid, rendererMode, renderCellBudget) => {
+  const totalCount = Number(grid?.count) || 0
+  if (!totalCount) return 0
+
+  const normalizedMode = normalizeRendererMode(rendererMode)
+
+  if (normalizedMode === RENDERER_MODE_GRID || normalizedMode === RENDERER_MODE_POLYGON) {
+    return totalCount
+  }
+
+  const hasExplicitBudget = Number.isFinite(Number(renderCellBudget))
+  if (!hasExplicitBudget) {
+    return totalCount
+  }
+
+  return resolveRenderBudget(normalizedMode, renderCellBudget)
+}
+
 const getRenderFrameState = (grid, rendererMode, maxCells) => {
   if (!grid?.count) {
     return {
@@ -254,7 +272,7 @@ const getRenderFrameState = (grid, rendererMode, maxCells) => {
     }
   }
 
-  const budget = resolveRenderBudget(rendererMode, maxCells)
+  const budget = resolveModeBudget(grid, rendererMode, maxCells)
   const normalizedMode = normalizeRendererMode(rendererMode)
   const cacheKey = `${normalizedMode}:${budget}`
 
@@ -328,7 +346,7 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
     resolutionPercent = 8,
     maxResolutionPercent = MAX_RESOLUTION_PERCENT,
     simulationFrames = 96,
-    proximityFactor = 6.2,
+    proximityFactor = 8.4,
     onProgress,
     signal,
   } = options
@@ -427,8 +445,13 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
 
 const drawGridCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => {
   const { renderData, sampleOut } = frameState
-  const lockToTarget = p >= 0.999
+  const lockToTarget = p >= 0.99995
+  const motionT = lockToTarget ? 1 : p
   const sizeProgress = lockToTarget ? 1 : smoothstep(clamp((p - 0.68) / 0.32, 0, 1))
+  const overlapPxBase = lockToTarget ? 1.0 : 2.1
+  const overlapWorldBase = overlapPxBase / Math.max(0.0001, scale)
+  const samplePrevOut = { x: 0, y: 0 }
+  const motionStep = clamp(2 / Math.max(2, Number(grid?.frameCount) || 96), 0.006, 0.03)
 
   for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
     const sourceIndex = renderData.indices[localIndex]
@@ -438,8 +461,22 @@ const drawGridCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => {
       sampleOut.x = grid.targetPositions[base2]
       sampleOut.y = grid.targetPositions[base2 + 1]
     } else {
-      sampleCellPosition(grid, sourceIndex, p, sampleOut)
+      sampleCellPosition(grid, sourceIndex, motionT, sampleOut, { settleStrength: 0 })
     }
+
+    let motionDistance = 0
+    if (!lockToTarget) {
+      const previousT = Math.max(0, motionT - motionStep)
+      sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, { settleStrength: 0 })
+      motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
+    }
+
+    const motionOverlapWorld = Math.min(4 / Math.max(0.0001, scale), motionDistance * 0.55)
+    const overlapWorld = overlapWorldBase + motionOverlapWorld
+    const strokeWidth = Math.max(
+      1,
+      overlapPxBase * 1.2 + Math.min(3.0, motionDistance * scale * 0.42),
+    )
 
     const boundBase = sourceIndex * 4
     const sourceWidth = grid.cellBounds?.[boundBase + 2] ?? 1
@@ -449,13 +486,34 @@ const drawGridCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => {
     const targetWidth = grid.cellBounds?.[targetBoundBase + 2] ?? sourceWidth
     const targetHeight = grid.cellBounds?.[targetBoundBase + 3] ?? sourceHeight
 
-    const drawWidth = (sourceWidth + (targetWidth - sourceWidth) * sizeProgress) * scale
-    const drawHeight = (sourceHeight + (targetHeight - sourceHeight) * sizeProgress) * scale
+    const drawWidth = ((sourceWidth + (targetWidth - sourceWidth) * sizeProgress) + overlapWorld * 2) * scale
+    const drawHeight = ((sourceHeight + (targetHeight - sourceHeight) * sizeProgress) + overlapWorld * 2) * scale
     const drawX = offsetX + sampleOut.x * scale - drawWidth * 0.5
     const drawY = offsetY + sampleOut.y * scale - drawHeight * 0.5
 
     ctx.fillStyle = renderData.fillStyles[localIndex]
     ctx.fillRect(drawX, drawY, drawWidth, drawHeight)
+    ctx.lineWidth = strokeWidth
+    ctx.strokeStyle = renderData.fillStyles[localIndex]
+    ctx.strokeRect(drawX, drawY, drawWidth, drawHeight)
+  }
+}
+
+const expandPolygonForOverlap = (points, centerX, centerY, radialScale, overlapWorld) => {
+  for (let point = 0; point < 8; point += 2) {
+    const dx = points[point] - centerX
+    const dy = points[point + 1] - centerY
+    const length = Math.hypot(dx, dy)
+
+    if (!Number.isFinite(length) || length < 0.0001) {
+      continue
+    }
+
+    const targetLength = length * radialScale + overlapWorld
+    const ratio = targetLength / length
+
+    points[point] = centerX + dx * ratio
+    points[point + 1] = centerY + dy * ratio
   }
 }
 
@@ -463,8 +521,19 @@ const drawPolygonCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => 
   const { renderData, shapeBuffers, sampleOut, polygonPoints } = frameState
   if (!shapeBuffers?.count) return
 
-  const lockToTarget = p >= 0.999
-  const morphT = lockToTarget ? 1 : p
+  const lockToTarget = p >= 0.99995
+  const motionT = lockToTarget ? 1 : p
+  const morphT = lockToTarget ? 1 : smoothstep(clamp((p - 0.08) / 0.92, 0, 1))
+  const radialScaleBase = lockToTarget ? 1.015 : 1.11 - smoothstep(clamp(p, 0, 1)) * 0.05
+  const overlapPxBase = lockToTarget ? 1.1 : 2.4
+  const overlapWorldBase = overlapPxBase / Math.max(0.0001, scale)
+  const samplePrevOut = { x: 0, y: 0 }
+  const motionStep = clamp(2 / Math.max(2, Number(grid?.frameCount) || 96), 0.006, 0.03)
+  const prevJoin = ctx.lineJoin
+  const prevMiterLimit = ctx.miterLimit
+
+  ctx.lineJoin = 'round'
+  ctx.miterLimit = 2
 
   for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
     const sourceIndex = renderData.indices[localIndex]
@@ -474,10 +543,30 @@ const drawPolygonCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => 
       sampleOut.x = grid.targetPositions[base2]
       sampleOut.y = grid.targetPositions[base2 + 1]
     } else {
-      sampleCellPosition(grid, sourceIndex, p, sampleOut)
+      sampleCellPosition(grid, sourceIndex, motionT, sampleOut, { settleStrength: 0 })
     }
 
+    let motionDistance = 0
+    if (!lockToTarget) {
+      const previousT = Math.max(0, motionT - motionStep)
+      sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, { settleStrength: 0 })
+      motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
+    }
+
+    const motionOverlapWorld = Math.min(
+      4 / Math.max(0.0001, scale),
+      motionDistance * 0.55,
+    )
+    const overlapWorld = overlapWorldBase + motionOverlapWorld
+    const radialScale = radialScaleBase + Math.min(0.2, motionDistance * 0.03)
+    const strokeWidth = Math.max(
+      1,
+      overlapPxBase * 1.25 + Math.min(3.2, motionDistance * scale * 0.45),
+    )
+
     interpolateCellPolygon(shapeBuffers, sourceIndex, sampleOut.x, sampleOut.y, morphT, polygonPoints)
+
+    expandPolygonForOverlap(polygonPoints, sampleOut.x, sampleOut.y, radialScale, overlapWorld)
 
     if (!Number.isFinite(polygonPoints[0]) || !Number.isFinite(polygonPoints[1])) continue
 
@@ -494,27 +583,33 @@ const drawPolygonCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => 
     ctx.closePath()
     ctx.fillStyle = renderData.fillStyles[localIndex]
     ctx.fill()
+    ctx.lineWidth = strokeWidth
+    ctx.strokeStyle = renderData.fillStyles[localIndex]
+    ctx.stroke()
   }
+
+  ctx.lineJoin = prevJoin
+  ctx.miterLimit = prevMiterLimit
 }
 
 const drawVoronoiCells = (ctx, frameState, grid, width, height, p, scale, offsetX, offsetY) => {
   const { renderData, coords, sampleOut } = frameState
-  const lockToTarget = p >= 0.999
 
   for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
     const sourceIndex = renderData.indices[localIndex]
     const base2 = sourceIndex * 2
 
-    if (lockToTarget) {
-      sampleOut.x = grid.targetPositions[base2]
-      sampleOut.y = grid.targetPositions[base2 + 1]
-    } else {
-      sampleCellPosition(grid, sourceIndex, p, sampleOut)
-    }
+    sampleCellPosition(grid, sourceIndex, p, sampleOut, {
+      settleStrength: 0.42,
+      settleStart: 0.9,
+      settleDuration: 0.1,
+      allowFinalTarget: false,
+      finalBackoff: 0.006,
+    })
 
     const coordBase = localIndex * 2
-    coords[coordBase] = sampleOut.x
-    coords[coordBase + 1] = sampleOut.y
+    coords[coordBase] = clamp(sampleOut.x, 0, width)
+    coords[coordBase + 1] = clamp(sampleOut.y, 0, height)
   }
 
   const delaunay = new Delaunay(coords)

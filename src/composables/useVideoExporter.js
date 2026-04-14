@@ -4,18 +4,12 @@ import { createPixiMorphRenderer } from './usePixiMorphRenderer'
 import { evaluateTimeline } from '../utils/timeline'
 import { DEFAULT_RENDERER_MODE, normalizeRendererMode } from '../utils/renderModes'
 
-const EXPORT_VORONOI_CELL_BUDGET = 4600
-const EXPORT_GRID_CELL_BUDGET = 5600
-const EXPORT_POLYGON_CELL_BUDGET = 4800
-
 const resolveRenderCellBudget = (rendererMode, explicitBudget) => {
   if (Number.isFinite(Number(explicitBudget))) {
     return Math.max(128, Math.round(Number(explicitBudget)))
   }
 
-  if (rendererMode === 'grid') return EXPORT_GRID_CELL_BUDGET
-  if (rendererMode === 'polygon') return EXPORT_POLYGON_CELL_BUDGET
-  return EXPORT_VORONOI_CELL_BUDGET
+  return undefined
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -215,7 +209,7 @@ const exportMorphGif2D = async (morphData, options = {}) => {
         width,
         height,
         rendererMode: normalizedRendererMode,
-        renderCellBudget: resolvedCellBudget,
+        ...(Number.isFinite(Number(resolvedCellBudget)) ? { renderCellBudget: resolvedCellBudget } : {}),
       })
     },
   })
@@ -255,7 +249,7 @@ const exportMorphGifWebGL = async (morphData, options = {}) => {
       manualRender: true,
       resolution: 1,
       rendererMode: normalizedRendererMode,
-      renderCellBudget: resolvedCellBudget,
+      ...(Number.isFinite(Number(resolvedCellBudget)) ? { renderCellBudget: resolvedCellBudget } : {}),
     })
 
     await renderer.setMorphData(morphData)

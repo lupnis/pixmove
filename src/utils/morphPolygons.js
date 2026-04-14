@@ -1,6 +1,7 @@
 const MIN_ALPHA = 0.16
-const DEFAULT_JITTER_RATIO = 0.22
-const MIN_JITTER = 0.6
+const DEFAULT_JITTER_RATIO = 0.34
+const MIN_JITTER = 1.2
+const VERTEX_EDGE_MARGIN = 0.15
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 
@@ -22,6 +23,142 @@ const mixHash = (seed) => {
 const randomUnit = (seed) => (mixHash(seed) & 0xffff) / 0xffff
 
 const jitterOffset = (seed, amount) => (randomUnit(seed) * 2 - 1) * amount
+
+const resolveGridSide = (count, sideHint) => {
+  const hinted = Number.isFinite(Number(sideHint)) ? Math.round(Number(sideHint)) : 0
+  if (hinted > 1) return hinted
+
+  return Math.max(1, Math.round(Math.sqrt(Math.max(1, count))))
+}
+
+const buildAxisLines = (bounds, side) => {
+  if (!bounds || bounds.length < side * side * 4) {
+    return null
+  }
+
+  const xLines = new Float32Array(side + 1)
+  const yLines = new Float32Array(side + 1)
+
+  for (let gx = 0; gx < side; gx += 1) {
+    const base = gx * 4
+    const x = bounds[base] ?? 0
+    const width = Math.max(1, bounds[base + 2] ?? 1)
+    xLines[gx] = x
+
+    if (gx === side - 1) {
+      xLines[side] = x + width
+    }
+  }
+
+  for (let gy = 0; gy < side; gy += 1) {
+    const base = gy * side * 4
+    const y = bounds[base + 1] ?? 0
+    const height = Math.max(1, bounds[base + 3] ?? 1)
+    yLines[gy] = y
+
+    if (gy === side - 1) {
+      yLines[side] = y + height
+    }
+  }
+
+  for (let i = 1; i < xLines.length; i += 1) {
+    if (!(xLines[i] > xLines[i - 1])) {
+      xLines[i] = xLines[i - 1] + 1
+    }
+  }
+
+  for (let i = 1; i < yLines.length; i += 1) {
+    if (!(yLines[i] > yLines[i - 1])) {
+      yLines[i] = yLines[i - 1] + 1
+    }
+  }
+
+  return { xLines, yLines }
+}
+
+const buildVertexField = (xLines, yLines, side, phaseSeed) => {
+  const stride = side + 1
+  const vertices = new Float32Array(stride * stride * 2)
+
+  for (let vy = 0; vy <= side; vy += 1) {
+    for (let vx = 0; vx <= side; vx += 1) {
+      let x = xLines[vx]
+      let y = yLines[vy]
+
+      const isBoundary = vx === 0 || vy === 0 || vx === side || vy === side
+
+      if (!isBoundary) {
+        const left = xLines[vx - 1]
+        const right = xLines[vx + 1]
+        const top = yLines[vy - 1]
+        const bottom = yLines[vy + 1]
+
+        const jitterX = Math.max(
+          MIN_JITTER,
+          Math.min(xLines[vx] - left, right - xLines[vx]) * DEFAULT_JITTER_RATIO,
+        )
+        const jitterY = Math.max(
+          MIN_JITTER,
+          Math.min(yLines[vy] - top, bottom - yLines[vy]) * DEFAULT_JITTER_RATIO,
+        )
+
+        const seed = Math.imul(vx + 1, 73856093)
+          ^ Math.imul(vy + 1, 19349663)
+          ^ Math.imul(phaseSeed + 1, 83492791)
+
+        x = clamp(
+          x + jitterOffset(seed + 17, jitterX),
+          left + VERTEX_EDGE_MARGIN,
+          right - VERTEX_EDGE_MARGIN,
+        )
+        y = clamp(
+          y + jitterOffset(seed + 31, jitterY),
+          top + VERTEX_EDGE_MARGIN,
+          bottom - VERTEX_EDGE_MARGIN,
+        )
+      }
+
+      const base2 = (vy * stride + vx) * 2
+      vertices[base2] = x
+      vertices[base2 + 1] = y
+    }
+  }
+
+  return vertices
+}
+
+const buildSharedFallbackPolygons = (bounds, side, phaseSeed) => {
+  const lines = buildAxisLines(bounds, side)
+  if (!lines) return null
+
+  const { xLines, yLines } = lines
+  const vertices = buildVertexField(xLines, yLines, side, phaseSeed)
+  const polygons = new Float32Array(side * side * 8)
+  const stride = side + 1
+
+  for (let gy = 0; gy < side; gy += 1) {
+    for (let gx = 0; gx < side; gx += 1) {
+      const index = gy * side + gx
+      const base8 = index * 8
+
+      const v00 = (gy * stride + gx) * 2
+      const v10 = (gy * stride + gx + 1) * 2
+      const v11 = ((gy + 1) * stride + gx + 1) * 2
+      const v01 = ((gy + 1) * stride + gx) * 2
+
+      polygons[base8] = vertices[v00]
+      polygons[base8 + 1] = vertices[v00 + 1]
+      polygons[base8 + 2] = vertices[v10]
+      polygons[base8 + 3] = vertices[v10 + 1]
+      polygons[base8 + 4] = vertices[v11]
+      polygons[base8 + 5] = vertices[v11 + 1]
+      polygons[base8 + 6] = vertices[v01]
+      polygons[base8 + 7] = vertices[v01 + 1]
+    }
+  }
+
+  return polygons
+}
 
 const fillJitteredQuadPoints = (bounds, index, phaseSeed, out) => {
   const base4 = index * 4
@@ -78,6 +215,15 @@ export const fillCellPolygonPoints = (polygons, bounds, index, out, phaseSeed = 
 
 export const buildMorphShapeBuffers = (grid) => {
   const count = Number(grid?.count) || 0
+  const side = resolveGridSide(count, grid?.side)
+  const hasSourcePolygons = Boolean(grid?.sourcePolygons && grid.sourcePolygons.length >= count * 8)
+  const hasTargetPolygons = Boolean(grid?.targetPolygons && grid.targetPolygons.length >= count * 8)
+  const sourceFallbackPolygons = hasSourcePolygons
+    ? null
+    : buildSharedFallbackPolygons(grid?.cellBounds, side, 0)
+  const targetFallbackPolygons = hasTargetPolygons
+    ? null
+    : buildSharedFallbackPolygons(grid?.cellBounds, side, 97)
 
   if (!count) {
     return {
@@ -105,10 +251,22 @@ export const buildMorphShapeBuffers = (grid) => {
     const base2 = index * 2
     const base8 = index * 8
 
-    fillCellPolygonPoints(grid.sourcePolygons, grid.cellBounds, index, sourcePoints, 0)
+    fillCellPolygonPoints(
+      hasSourcePolygons ? grid.sourcePolygons : sourceFallbackPolygons,
+      grid.cellBounds,
+      index,
+      sourcePoints,
+      0,
+    )
 
     const mappedTargetIndex = clampIndex(grid.sourceToTarget?.[index] ?? index, count)
-    fillCellPolygonPoints(grid.targetPolygons, grid.cellBounds, mappedTargetIndex, targetPoints, 1 + index)
+    fillCellPolygonPoints(
+      hasTargetPolygons ? grid.targetPolygons : targetFallbackPolygons,
+      grid.cellBounds,
+      mappedTargetIndex,
+      targetPoints,
+      1 + index,
+    )
 
     const sourceCenterX = grid.sourcePositions?.[base2] ?? polygonCenter(sourcePoints, sourceCenterFallback).x
     const sourceCenterY = grid.sourcePositions?.[base2 + 1] ?? polygonCenter(sourcePoints, sourceCenterFallback).y
