@@ -407,10 +407,17 @@ onBeforeUnmount(() => {
   padding: 10px;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable both-edges;
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 10px;
-  align-content: start;
+}
+
+.history-body > * {
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .history-foot {
@@ -433,14 +440,17 @@ onBeforeUnmount(() => {
 }
 
 .history-skeleton {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 
 .record-skeleton {
+  flex: 0 0 auto;
   display: grid;
-  grid-template-columns: 88px 1fr;
+  grid-template-columns: minmax(72px, 88px) minmax(0, 1fr);
   gap: 10px;
+  min-height: 112px;
   border: 1px solid var(--line-soft);
   border-radius: 12px;
   padding: 8px;
@@ -508,10 +518,12 @@ onBeforeUnmount(() => {
 }
 
 .record {
+  flex: 0 0 auto;
   position: relative;
   display: grid;
-  grid-template-columns: 88px 1fr;
+  grid-template-columns: minmax(72px, 88px) minmax(0, 1fr);
   gap: 10px;
+  min-height: 112px;
   border: 1px solid var(--line-soft);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.03);
@@ -519,7 +531,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   outline: none;
   overflow: hidden;
-  max-height: 180px;
+  max-height: 540px;
   transition:
     grid-template-columns 220ms ease,
     transform 220ms ease,
@@ -560,6 +572,7 @@ onBeforeUnmount(() => {
 .record.exiting {
   opacity: 0;
   transform: translateX(-22px) scale(0.985);
+  min-height: 0;
   max-height: 0;
   padding-top: 0;
   padding-bottom: 0;
@@ -579,6 +592,8 @@ onBeforeUnmount(() => {
 .info {
   min-width: 0;
   display: grid;
+  grid-template-rows: auto auto auto;
+  align-content: start;
   gap: 7px;
 }
 
@@ -592,8 +607,9 @@ onBeforeUnmount(() => {
 }
 
 .meta {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
   flex-wrap: wrap;
   font-size: 11px;
   color: var(--text-muted);
@@ -601,9 +617,9 @@ onBeforeUnmount(() => {
 }
 
 .actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
-  flex-wrap: nowrap;
   transition: gap 220ms ease;
 }
 
@@ -611,9 +627,14 @@ onBeforeUnmount(() => {
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   padding: 4px 8px;
+  width: 100%;
+  min-width: 0;
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-main);
   font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .actions .danger {
@@ -676,10 +697,11 @@ onBeforeUnmount(() => {
   }
 }
 
-@container (max-width: 300px) {
+@container (max-width: 420px) {
   .record-skeleton,
   .record {
     grid-template-columns: 1fr;
+    min-height: 198px;
     animation: history-stack-in 220ms ease;
   }
 
@@ -690,11 +712,11 @@ onBeforeUnmount(() => {
   }
 
   .meta {
+    grid-template-columns: 1fr;
     gap: 6px;
   }
 
   .actions {
-    display: grid;
     grid-template-columns: 1fr;
   }
 
