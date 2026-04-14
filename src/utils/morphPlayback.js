@@ -58,3 +58,96 @@ export const sampleCellPosition = (grid, sourceIndex, progress, out = { x: 0, y:
   out.y = y
   return out
 }
+
+const clampIndex = (value, maxExclusive) => {
+  const parsed = Number.isFinite(Number(value)) ? Number(value) : 0
+  return clamp(Math.round(parsed), 0, Math.max(0, maxExclusive - 1))
+}
+
+const resolveAxisFirst = (sourceIndex, targetIndex, options) => {
+  if (typeof options?.xFirst === 'boolean') return options.xFirst
+
+  // Deterministic split helps create a "flow" look without diagonal movement.
+  const hash = (Math.imul(sourceIndex + 1, 73856093) ^ Math.imul(targetIndex + 1, 19349663)) >>> 0
+  return (hash & 1) === 0
+}
+
+export const sampleGridFlowPosition = (grid, sourceIndex, progress, out = { x: 0, y: 0 }, options = {}) => {
+  if (!grid || grid.count <= 0) {
+    out.x = 0
+    out.y = 0
+    return out
+  }
+
+  const p = clamp(progress, 0, 1)
+  const safeSourceIndex = clampIndex(sourceIndex, grid.count)
+  const base2 = safeSourceIndex * 2
+  const sourceX = grid.sourcePositions?.[base2] ?? 0
+  const sourceY = grid.sourcePositions?.[base2 + 1] ?? 0
+  const targetX = grid.targetPositions?.[base2] ?? sourceX
+  const targetY = grid.targetPositions?.[base2 + 1] ?? sourceY
+
+  if (p <= 0) {
+    out.x = sourceX
+    out.y = sourceY
+    return out
+  }
+
+  if (p >= 1) {
+    out.x = targetX
+    out.y = targetY
+    return out
+  }
+
+  const mappedTargetIndex = clampIndex(grid.sourceToTarget?.[safeSourceIndex] ?? safeSourceIndex, grid.count)
+  const xFirst = resolveAxisFirst(safeSourceIndex, mappedTargetIndex, options)
+
+  const dx = targetX - sourceX
+  const dy = targetY - sourceY
+  const absX = Math.abs(dx)
+  const absY = Math.abs(dy)
+
+  if (absX < 0.0001 && absY < 0.0001) {
+    out.x = targetX
+    out.y = targetY
+    return out
+  }
+
+  const total = Math.max(0.0001, absX + absY)
+  const firstSpan = xFirst ? absX : absY
+  const split = clamp(firstSpan / total, 0, 1)
+
+  if (split <= 0.0001) {
+    out.x = sourceX + dx * p
+    out.y = sourceY + dy * p
+    return out
+  }
+
+  if (split >= 0.9999) {
+    out.x = sourceX + dx * p
+    out.y = sourceY + dy * p
+    return out
+  }
+
+  if (xFirst) {
+    if (p <= split) {
+      const localT = p / split
+      out.x = sourceX + dx * localT
+      out.y = sourceY
+    } else {
+      const localT = (p - split) / (1 - split)
+      out.x = targetX
+      out.y = sourceY + dy * localT
+    }
+  } else if (p <= split) {
+    const localT = p / split
+    out.x = sourceX
+    out.y = sourceY + dy * localT
+  } else {
+    const localT = (p - split) / (1 - split)
+    out.x = sourceX + dx * localT
+    out.y = targetY
+  }
+
+  return out
+}

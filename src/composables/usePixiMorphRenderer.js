@@ -1,12 +1,13 @@
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { Delaunay } from 'd3-delaunay'
-import { clamp, sampleCellPosition, smoothstep } from '../utils/morphPlayback'
+import { clamp, sampleCellPosition, sampleGridFlowPosition, smoothstep } from '../utils/morphPlayback'
 import { getMorphShapeBuffers, interpolateCellPolygon } from '../utils/morphPolygons'
 import { getVoronoiFrameSample, getVoronoiRenderData } from '../utils/morphVoronoi'
 import {
   DEFAULT_RENDERER_MODE,
   normalizeRendererMode,
   RENDERER_MODE_GRID,
+  RENDERER_MODE_GRID_FLOW,
   RENDERER_MODE_POLYGON,
   RENDERER_MODE_VORONOI,
 } from '../utils/renderModes'
@@ -74,7 +75,7 @@ const loadImageElement = (src) =>
   })
 
 const resolveDefaultCellBudget = (rendererMode, manualRender) => {
-  if (rendererMode === RENDERER_MODE_GRID) {
+  if (rendererMode === RENDERER_MODE_GRID || rendererMode === RENDERER_MODE_GRID_FLOW) {
     return manualRender ? DEFAULT_EXPORT_GRID_CELLS : DEFAULT_PREVIEW_GRID_CELLS
   }
 
@@ -102,7 +103,11 @@ const resolveModeBudget = (grid, rendererMode, renderCellBudget) => {
   const totalCount = Number(grid?.count) || 0
   if (!totalCount) return 0
 
-  if (rendererMode === RENDERER_MODE_GRID || rendererMode === RENDERER_MODE_POLYGON) {
+  if (
+    rendererMode === RENDERER_MODE_GRID
+    || rendererMode === RENDERER_MODE_GRID_FLOW
+    || rendererMode === RENDERER_MODE_POLYGON
+  ) {
     return totalCount
   }
 
@@ -237,41 +242,140 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
-    const lockToTarget = p >= 0.99995
+    const lockToTarget = p >= 0.985
+    const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
+    const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
     const motionT = lockToTarget ? 1 : p
-    const sizeProgress = lockToTarget ? 1 : smoothstep(clamp((p - 0.68) / 0.32, 0, 1))
+    const sizeProgress = smoothstep(clamp((p - 0.68) / 0.32, 0, 1))
     const grid = currentMorph.grid
     const viewScale = Math.max(0.0001, Math.min(app.screen.width / currentMorph.width, app.screen.height / currentMorph.height))
-    const overlapPxBase = lockToTarget ? 1.0 : 2.1
+    const overlapPxBase = 1.85 + (2.45 - 1.85) * tailBlend
     const overlapWorldBase = overlapPxBase / viewScale
     const samplePrevOut = { x: 0, y: 0 }
     const motionStep = clamp(2 / Math.max(2, Number(grid?.frameCount) || 96), 0.006, 0.03)
+    const motionBoost = 1 - tailBlend * 0.88
 
     polygonLayer.clear()
 
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]
       const base2 = sourceIndex * 2
+      const targetX = grid.targetPositions[base2]
+      const targetY = grid.targetPositions[base2 + 1]
 
       if (lockToTarget) {
-        sampleOut.x = grid.targetPositions[base2]
-        sampleOut.y = grid.targetPositions[base2 + 1]
+        sampleOut.x = targetX
+        sampleOut.y = targetY
       } else {
-        sampleCellPosition(grid, sourceIndex, motionT, sampleOut, { settleStrength: 0 })
+        sampleCellPosition(grid, sourceIndex, motionT, sampleOut, {
+          settleStrength: 0.52,
+          settleStart: 0.78,
+          settleDuration: 0.22,
+        })
+        sampleOut.x += (targetX - sampleOut.x) * settleBlend
+        sampleOut.y += (targetY - sampleOut.y) * settleBlend
       }
 
       let motionDistance = 0
       if (!lockToTarget) {
         const previousT = Math.max(0, motionT - motionStep)
-        sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, { settleStrength: 0 })
+        sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, {
+          settleStrength: 0.52,
+          settleStart: 0.78,
+          settleDuration: 0.22,
+        })
+        const previousSettle = smoothstep(clamp((previousT - 0.76) / 0.24, 0, 1))
+        samplePrevOut.x += (targetX - samplePrevOut.x) * previousSettle
+        samplePrevOut.y += (targetY - samplePrevOut.y) * previousSettle
         motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
       }
 
-      const motionOverlapWorld = Math.min(4 / viewScale, motionDistance * 0.55)
+      const motionOverlapWorld = Math.min(4 / viewScale, motionDistance * 0.55 * motionBoost)
       const overlapWorld = overlapWorldBase + motionOverlapWorld
       const strokeWidth = Math.max(
         1,
-        overlapPxBase * 1.2 + Math.min(3.0, motionDistance * viewScale * 0.42),
+        overlapPxBase * 1.2 + Math.min(3.0, motionDistance * viewScale * 0.42 * motionBoost),
+      )
+
+      const boundBase = sourceIndex * 4
+      const sourceWidth = grid.cellBounds?.[boundBase + 2] ?? 1
+      const sourceHeight = grid.cellBounds?.[boundBase + 3] ?? 1
+      const mappedTargetIndex = clamp(Number(grid.sourceToTarget?.[sourceIndex] ?? sourceIndex), 0, grid.count - 1)
+      const targetBoundBase = mappedTargetIndex * 4
+      const targetWidth = grid.cellBounds?.[targetBoundBase + 2] ?? sourceWidth
+      const targetHeight = grid.cellBounds?.[targetBoundBase + 3] ?? sourceHeight
+
+      const drawWidth = sourceWidth + (targetWidth - sourceWidth) * sizeProgress + overlapWorld * 2
+      const drawHeight = sourceHeight + (targetHeight - sourceHeight) * sizeProgress + overlapWorld * 2
+
+      polygonLayer.rect(
+        sampleOut.x - drawWidth * 0.5,
+        sampleOut.y - drawHeight * 0.5,
+        drawWidth,
+        drawHeight,
+      ).fill({
+        color: renderData.colors[localIndex],
+        alpha: renderData.alphas[localIndex],
+      }).stroke({
+        width: strokeWidth,
+        color: renderData.colors[localIndex],
+        alpha: renderData.alphas[localIndex],
+        join: 'round',
+      })
+    }
+  }
+
+  const drawGridFlow = (p) => {
+    if (!currentMorph?.grid || !renderData?.count) {
+      polygonLayer.clear()
+      return
+    }
+
+    const lockToTarget = p >= 0.985
+    const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
+    const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
+    const motionT = lockToTarget ? 1 : p
+    const sizeProgress = smoothstep(clamp((p - 0.68) / 0.32, 0, 1))
+    const grid = currentMorph.grid
+    const viewScale = Math.max(0.0001, Math.min(app.screen.width / currentMorph.width, app.screen.height / currentMorph.height))
+    const overlapPxBase = 2.35 + (3.05 - 2.35) * tailBlend
+    const overlapWorldBase = overlapPxBase / viewScale
+    const samplePrevOut = { x: 0, y: 0 }
+    const motionStep = clamp(2 / Math.max(2, Number(grid?.frameCount) || 96), 0.006, 0.03)
+    const motionBoost = 1 - tailBlend * 0.88
+
+    polygonLayer.clear()
+
+    for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
+      const sourceIndex = renderData.indices[localIndex]
+      const base2 = sourceIndex * 2
+      const targetX = grid.targetPositions[base2]
+      const targetY = grid.targetPositions[base2 + 1]
+
+      if (lockToTarget) {
+        sampleOut.x = targetX
+        sampleOut.y = targetY
+      } else {
+        sampleGridFlowPosition(grid, sourceIndex, motionT, sampleOut)
+        sampleOut.x += (targetX - sampleOut.x) * settleBlend
+        sampleOut.y += (targetY - sampleOut.y) * settleBlend
+      }
+
+      let motionDistance = 0
+      if (!lockToTarget) {
+        const previousT = Math.max(0, motionT - motionStep)
+        sampleGridFlowPosition(grid, sourceIndex, previousT, samplePrevOut)
+        const previousSettle = smoothstep(clamp((previousT - 0.76) / 0.24, 0, 1))
+        samplePrevOut.x += (targetX - samplePrevOut.x) * previousSettle
+        samplePrevOut.y += (targetY - samplePrevOut.y) * previousSettle
+        motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
+      }
+
+      const motionOverlapWorld = Math.min(5 / viewScale, motionDistance * 0.7 * motionBoost)
+      const overlapWorld = overlapWorldBase + motionOverlapWorld
+      const strokeWidth = Math.max(
+        1,
+        overlapPxBase * 1.25 + Math.min(3.4, motionDistance * viewScale * 0.5 * motionBoost),
       )
 
       const boundBase = sourceIndex * 4
@@ -309,42 +413,60 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     }
 
     const grid = currentMorph.grid
-    const lockToTarget = p >= 0.99995
+    const lockToTarget = p >= 0.985
+    const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
+    const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
     const motionT = lockToTarget ? 1 : p
-    const morphT = lockToTarget ? 1 : smoothstep(clamp((p - 0.08) / 0.92, 0, 1))
+    const morphT = smoothstep(clamp((p - 0.08) / 0.92, 0, 1))
     const viewScale = Math.max(0.0001, Math.min(app.screen.width / currentMorph.width, app.screen.height / currentMorph.height))
-    const radialScaleBase = lockToTarget ? 1.015 : 1.11 - smoothstep(clamp(p, 0, 1)) * 0.05
-    const overlapPxBase = lockToTarget ? 1.1 : 2.4
+    const radialScaleBase = 1.07 + (1.05 - 1.07) * tailBlend
+    const overlapPxBase = 2.1 + (2.85 - 2.1) * tailBlend
     const overlapWorldBase = overlapPxBase / viewScale
     const samplePrevOut = { x: 0, y: 0 }
     const motionStep = clamp(2 / Math.max(2, Number(grid?.frameCount) || 96), 0.006, 0.03)
+    const motionBoost = 1 - tailBlend * 0.88
 
     polygonLayer.clear()
 
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]
       const base2 = sourceIndex * 2
+      const targetX = grid.targetPositions[base2]
+      const targetY = grid.targetPositions[base2 + 1]
 
       if (lockToTarget) {
-        sampleOut.x = grid.targetPositions[base2]
-        sampleOut.y = grid.targetPositions[base2 + 1]
+        sampleOut.x = targetX
+        sampleOut.y = targetY
       } else {
-        sampleCellPosition(grid, sourceIndex, motionT, sampleOut, { settleStrength: 0 })
+        sampleCellPosition(grid, sourceIndex, motionT, sampleOut, {
+          settleStrength: 0.52,
+          settleStart: 0.78,
+          settleDuration: 0.22,
+        })
+        sampleOut.x += (targetX - sampleOut.x) * settleBlend
+        sampleOut.y += (targetY - sampleOut.y) * settleBlend
       }
 
       let motionDistance = 0
       if (!lockToTarget) {
         const previousT = Math.max(0, motionT - motionStep)
-        sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, { settleStrength: 0 })
+        sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, {
+          settleStrength: 0.52,
+          settleStart: 0.78,
+          settleDuration: 0.22,
+        })
+        const previousSettle = smoothstep(clamp((previousT - 0.76) / 0.24, 0, 1))
+        samplePrevOut.x += (targetX - samplePrevOut.x) * previousSettle
+        samplePrevOut.y += (targetY - samplePrevOut.y) * previousSettle
         motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
       }
 
-      const motionOverlapWorld = Math.min(4 / viewScale, motionDistance * 0.55)
+      const motionOverlapWorld = Math.min(4 / viewScale, motionDistance * 0.55 * motionBoost)
       const overlapWorld = overlapWorldBase + motionOverlapWorld
-      const radialScale = radialScaleBase + Math.min(0.2, motionDistance * 0.03)
+      const radialScale = radialScaleBase + Math.min(0.2, motionDistance * 0.03 * motionBoost)
       const strokeWidth = Math.max(
         1,
-        overlapPxBase * 1.25 + Math.min(3.2, motionDistance * viewScale * 0.45),
+        overlapPxBase * 1.25 + Math.min(3.2, motionDistance * viewScale * 0.45 * motionBoost),
       )
 
       interpolateCellPolygon(shapeBuffers, sourceIndex, sampleOut.x, sampleOut.y, morphT, polygonPoints)
@@ -572,6 +694,13 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
 
     if (rendererMode === RENDERER_MODE_GRID) {
       drawGrid(p)
+      currentProgress = p
+      renderFrame()
+      return
+    }
+
+    if (rendererMode === RENDERER_MODE_GRID_FLOW) {
+      drawGridFlow(p)
       currentProgress = p
       renderFrame()
       return
