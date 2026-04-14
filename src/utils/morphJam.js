@@ -88,20 +88,14 @@ export const sampleJamCenters = (
     const targetX = jamState.targetX[localIndex]
     const targetY = jamState.targetY[localIndex]
 
-    if (p >= 0.998) {
+    if (p >= 1) {
       jamState.workX[localIndex] = targetX
       jamState.workY[localIndex] = targetY
       jamState.locked[localIndex] = 1
       continue
     }
 
-    sampleCellPosition(grid, sourceIndex, p, sampleOut, {
-      settleStrength: 0.5,
-      settleStart: 0.72,
-      settleDuration: 0.28,
-      allowFinalTarget: false,
-      finalBackoff: 0.004,
-    })
+    sampleCellPosition(grid, sourceIndex, p, sampleOut)
 
     let x = sampleOut.x + (targetX - sampleOut.x) * settleBlend * 0.28
     let y = sampleOut.y + (targetY - sampleOut.y) * settleBlend * 0.28
@@ -110,7 +104,7 @@ export const sampleJamCenters = (
     const toTargetY = targetY - y
     const targetDistance = Math.hypot(toTargetX, toTargetY)
     const lockRadius = Math.max(0.16, jamState.radii[localIndex] * (0.24 + lockBlend * 0.32))
-    const isLocked = targetDistance <= lockRadius || p >= 0.992
+    const isLocked = targetDistance <= lockRadius || p >= 1
 
     if (isLocked) {
       x = targetX
@@ -254,7 +248,7 @@ export const sampleJamCenters = (
   for (let localIndex = 0; localIndex < count; localIndex += 1) {
     const coordBase = localIndex * 2
 
-    if (p >= 0.999) {
+    if (p >= 1) {
       outCoords[coordBase] = jamState.targetX[localIndex]
       outCoords[coordBase + 1] = jamState.targetY[localIndex]
       continue

@@ -298,11 +298,9 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
 
     const revealProgress = resolveEffectiveRevealProgress(p)
 
-    const lockToTarget = p >= 0.985
     const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
-    const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
-    const motionT = lockToTarget ? 1 : p
-    const sizeProgress = smoothstep(clamp((p - 0.68) / 0.32, 0, 1))
+    const motionT = p
+    const sizeProgress = p
     const grid = currentMorph.grid
     const viewScale = Math.max(0.0001, Math.min(app.screen.width / currentMorph.width, app.screen.height / currentMorph.height))
     const overlapPxBase = 1.85 + (2.45 - 1.85) * tailBlend
@@ -316,34 +314,12 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]
       if (!isSourceRevealed(sourceIndex, revealProgress)) continue
-      const base2 = sourceIndex * 2
-      const targetX = grid.targetPositions[base2]
-      const targetY = grid.targetPositions[base2 + 1]
-
-      if (lockToTarget) {
-        sampleOut.x = targetX
-        sampleOut.y = targetY
-      } else {
-        sampleCellPosition(grid, sourceIndex, motionT, sampleOut, {
-          settleStrength: 0.52,
-          settleStart: 0.78,
-          settleDuration: 0.22,
-        })
-        sampleOut.x += (targetX - sampleOut.x) * settleBlend
-        sampleOut.y += (targetY - sampleOut.y) * settleBlend
-      }
+      sampleCellPosition(grid, sourceIndex, motionT, sampleOut)
 
       let motionDistance = 0
-      if (!lockToTarget) {
+      if (motionT > 0) {
         const previousT = Math.max(0, motionT - motionStep)
-        sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, {
-          settleStrength: 0.52,
-          settleStart: 0.78,
-          settleDuration: 0.22,
-        })
-        const previousSettle = smoothstep(clamp((previousT - 0.76) / 0.24, 0, 1))
-        samplePrevOut.x += (targetX - samplePrevOut.x) * previousSettle
-        samplePrevOut.y += (targetY - samplePrevOut.y) * previousSettle
+        sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut)
         motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
       }
 
@@ -398,14 +374,14 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     const frameProgress = clamp(motionProgress, 0, 1) * (frameCount - 1)
     const frameA = Math.floor(frameProgress)
     const frameB = Math.min(frameCount - 1, frameA + 1)
-    const localT = smoothstep(frameProgress - frameA)
+    const localT = frameProgress - frameA
     const offsetA = frameA * count
     const offsetB = frameB * count
     const tailBlend = smoothstep(clamp((motionProgress - 0.8) / 0.2, 0, 1))
     const viewScale = Math.max(0.0001, Math.min(app.screen.width / currentMorph.width, app.screen.height / currentMorph.height))
     const overlapPxBase = 2.8 + (3.5 - 2.8) * tailBlend
     const resetSmoothing = !flowSmoothInitialized || motionProgress < flowLastProgress - 0.0001
-    const forceTarget = motionProgress >= 0.999
+    const forceTarget = motionProgress >= 1
     const progressDelta = resetSmoothing ? 0 : Math.max(0, motionProgress - flowLastProgress)
     const virtualFrameSpan = progressDelta * Math.max(1, frameCount - 1)
     const stepBudgetPx = forceTarget
@@ -497,11 +473,9 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     const revealProgress = resolveEffectiveRevealProgress(p)
 
     const grid = currentMorph.grid
-    const lockToTarget = p >= 0.985
     const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
-    const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
-    const motionT = lockToTarget ? 1 : p
-    const morphT = smoothstep(clamp((p - 0.08) / 0.92, 0, 1))
+    const motionT = p
+    const morphT = p
     const viewScale = Math.max(0.0001, Math.min(app.screen.width / currentMorph.width, app.screen.height / currentMorph.height))
     const radialScaleBase = 1.07 + (1.05 - 1.07) * tailBlend
     const overlapPxBase = 2.1 + (2.85 - 2.1) * tailBlend
@@ -515,34 +489,12 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]
       if (!isSourceRevealed(sourceIndex, revealProgress)) continue
-      const base2 = sourceIndex * 2
-      const targetX = grid.targetPositions[base2]
-      const targetY = grid.targetPositions[base2 + 1]
-
-      if (lockToTarget) {
-        sampleOut.x = targetX
-        sampleOut.y = targetY
-      } else {
-        sampleCellPosition(grid, sourceIndex, motionT, sampleOut, {
-          settleStrength: 0.52,
-          settleStart: 0.78,
-          settleDuration: 0.22,
-        })
-        sampleOut.x += (targetX - sampleOut.x) * settleBlend
-        sampleOut.y += (targetY - sampleOut.y) * settleBlend
-      }
+      sampleCellPosition(grid, sourceIndex, motionT, sampleOut)
 
       let motionDistance = 0
-      if (!lockToTarget) {
+      if (motionT > 0) {
         const previousT = Math.max(0, motionT - motionStep)
-        sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, {
-          settleStrength: 0.52,
-          settleStart: 0.78,
-          settleDuration: 0.22,
-        })
-        const previousSettle = smoothstep(clamp((previousT - 0.76) / 0.24, 0, 1))
-        samplePrevOut.x += (targetX - samplePrevOut.x) * previousSettle
-        samplePrevOut.y += (targetY - samplePrevOut.y) * previousSettle
+        sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut)
         motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
       }
 
@@ -685,15 +637,8 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
 
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]
-      const base2 = sourceIndex * 2
 
-      sampleCellPosition(currentMorph.grid, sourceIndex, p, sampleOut, {
-        settleStrength: 0.42,
-        settleStart: 0.9,
-        settleDuration: 0.1,
-        allowFinalTarget: false,
-        finalBackoff: 0.006,
-      })
+      sampleCellPosition(currentMorph.grid, sourceIndex, p, sampleOut)
 
       const coordsBase = localIndex * 2
       voronoiCoords[coordsBase] = clamp(sampleOut.x, 0, currentMorph.width)

@@ -518,11 +518,9 @@ export const buildMorphData = async (sourceUrl, targetUrl, options = {}) => {
 
 const drawGridCells = (ctx, frameState, grid, p, scale, offsetX, offsetY, revealProgress = 1) => {
   const { renderData, sampleOut } = frameState
-  const lockToTarget = p >= 0.985
   const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
-  const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
-  const motionT = lockToTarget ? 1 : p
-  const sizeProgress = smoothstep(clamp((p - 0.68) / 0.32, 0, 1))
+  const motionT = p
+  const sizeProgress = p
   const overlapPxBase = 1.85 + (2.45 - 1.85) * tailBlend
   const overlapWorldBase = overlapPxBase / Math.max(0.0001, scale)
   const samplePrevOut = { x: 0, y: 0 }
@@ -532,34 +530,12 @@ const drawGridCells = (ctx, frameState, grid, p, scale, offsetX, offsetY, reveal
   for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
     const sourceIndex = renderData.indices[localIndex]
     if (!isSourceRevealed(sourceIndex, revealProgress)) continue
-    const base2 = sourceIndex * 2
-    const targetX = grid.targetPositions[base2]
-    const targetY = grid.targetPositions[base2 + 1]
-
-    if (lockToTarget) {
-      sampleOut.x = targetX
-      sampleOut.y = targetY
-    } else {
-      sampleCellPosition(grid, sourceIndex, motionT, sampleOut, {
-        settleStrength: 0.52,
-        settleStart: 0.78,
-        settleDuration: 0.22,
-      })
-      sampleOut.x += (targetX - sampleOut.x) * settleBlend
-      sampleOut.y += (targetY - sampleOut.y) * settleBlend
-    }
+    sampleCellPosition(grid, sourceIndex, motionT, sampleOut)
 
     let motionDistance = 0
-    if (!lockToTarget) {
+    if (motionT > 0) {
       const previousT = Math.max(0, motionT - motionStep)
-      sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, {
-        settleStrength: 0.52,
-        settleStart: 0.78,
-        settleDuration: 0.22,
-      })
-      const previousSettle = smoothstep(clamp((previousT - 0.76) / 0.24, 0, 1))
-      samplePrevOut.x += (targetX - samplePrevOut.x) * previousSettle
-      samplePrevOut.y += (targetY - samplePrevOut.y) * previousSettle
+      sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut)
       motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
     }
 
@@ -601,13 +577,13 @@ const drawGridFlowCells = (ctx, frameState, grid, p, scale, offsetX, offsetY, re
   const frameProgress = clamp(p, 0, 1) * (frameCount - 1)
   const frameA = Math.floor(frameProgress)
   const frameB = Math.min(frameCount - 1, frameA + 1)
-  const localT = smoothstep(frameProgress - frameA)
+  const localT = frameProgress - frameA
   const offsetA = frameA * count
   const offsetB = frameB * count
   const tailBlend = smoothstep(clamp((p - 0.8) / 0.2, 0, 1))
   const overlapPxBase = 2.8 + (3.5 - 2.8) * tailBlend
   const resetSmoothing = !frameState.flowSmoothInitialized || p < frameState.flowLastProgress - 0.0001
-  const forceTarget = p >= 0.999
+  const forceTarget = p >= 1
   const progressDelta = resetSmoothing ? 0 : Math.max(0, p - frameState.flowLastProgress)
   const virtualFrameSpan = progressDelta * Math.max(1, frameCount - 1)
   const stepBudgetPx = forceTarget
@@ -706,11 +682,9 @@ const drawPolygonCells = (ctx, frameState, grid, p, scale, offsetX, offsetY, rev
   const { renderData, shapeBuffers, sampleOut, polygonPoints } = frameState
   if (!shapeBuffers?.count) return
 
-  const lockToTarget = p >= 0.985
   const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
-  const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
-  const motionT = lockToTarget ? 1 : p
-  const morphT = smoothstep(clamp((p - 0.08) / 0.92, 0, 1))
+  const motionT = p
+  const morphT = p
   const radialScaleBase = 1.07 + (1.05 - 1.07) * tailBlend
   const overlapPxBase = 2.1 + (2.85 - 2.1) * tailBlend
   const overlapWorldBase = overlapPxBase / Math.max(0.0001, scale)
@@ -726,34 +700,12 @@ const drawPolygonCells = (ctx, frameState, grid, p, scale, offsetX, offsetY, rev
   for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
     const sourceIndex = renderData.indices[localIndex]
     if (!isSourceRevealed(sourceIndex, revealProgress)) continue
-    const base2 = sourceIndex * 2
-    const targetX = grid.targetPositions[base2]
-    const targetY = grid.targetPositions[base2 + 1]
-
-    if (lockToTarget) {
-      sampleOut.x = targetX
-      sampleOut.y = targetY
-    } else {
-      sampleCellPosition(grid, sourceIndex, motionT, sampleOut, {
-        settleStrength: 0.52,
-        settleStart: 0.78,
-        settleDuration: 0.22,
-      })
-      sampleOut.x += (targetX - sampleOut.x) * settleBlend
-      sampleOut.y += (targetY - sampleOut.y) * settleBlend
-    }
+    sampleCellPosition(grid, sourceIndex, motionT, sampleOut)
 
     let motionDistance = 0
-    if (!lockToTarget) {
+    if (motionT > 0) {
       const previousT = Math.max(0, motionT - motionStep)
-      sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut, {
-        settleStrength: 0.52,
-        settleStart: 0.78,
-        settleDuration: 0.22,
-      })
-      const previousSettle = smoothstep(clamp((previousT - 0.76) / 0.24, 0, 1))
-      samplePrevOut.x += (targetX - samplePrevOut.x) * previousSettle
-      samplePrevOut.y += (targetY - samplePrevOut.y) * previousSettle
+      sampleCellPosition(grid, sourceIndex, previousT, samplePrevOut)
       motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
     }
 
@@ -859,15 +811,8 @@ const drawVoronoiCells = (ctx, frameState, grid, width, height, p, scale, offset
 
   for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
     const sourceIndex = renderData.indices[localIndex]
-    const base2 = sourceIndex * 2
 
-    sampleCellPosition(grid, sourceIndex, p, sampleOut, {
-      settleStrength: 0.42,
-      settleStart: 0.9,
-      settleDuration: 0.1,
-      allowFinalTarget: false,
-      finalBackoff: 0.006,
-    })
+    sampleCellPosition(grid, sourceIndex, p, sampleOut)
 
     const coordBase = localIndex * 2
     coords[coordBase] = clamp(sampleOut.x, 0, width)
