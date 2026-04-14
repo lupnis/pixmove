@@ -98,6 +98,8 @@ const settingsDraftTone = ref(DEFAULT_COMPONENT_TONE)
 const settingsDraftLanguage = ref(DEFAULT_LANGUAGE_MODE)
 const rendererMode = ref(DEFAULT_RENDERER_MODE)
 const settingsDraftRenderer = ref(DEFAULT_RENDERER_MODE)
+const sourceOverlayEnabled = ref(false)
+const settingsDraftSourceOverlayEnabled = ref(false)
 const showClearRecordsConfirm = ref(false)
 const isClearingRecords = ref(false)
 const systemPrefersDark = ref(true)
@@ -377,6 +379,7 @@ const buildCacheStats = async (taskId) => {
     componentTone: componentTone.value,
     languageMode: languageMode.value,
     rendererMode: rendererMode.value,
+    sourceOverlayEnabled: sourceOverlayEnabled.value,
     sampleDensity: sampleDensity.value,
     durationSeconds: durationSeconds.value,
     keyframes: keyframes.value,
@@ -478,6 +481,7 @@ const cacheStatsRefreshFingerprint = computed(() => [
   componentTone.value,
   languageMode.value,
   rendererMode.value,
+  sourceOverlayEnabled.value,
   sampleDensity.value,
   durationSeconds.value,
   keyframes.value.length,
@@ -666,6 +670,7 @@ const openSettings = async () => {
   settingsDraftTone.value = componentTone.value
   settingsDraftLanguage.value = languageMode.value
   settingsDraftRenderer.value = rendererMode.value
+  settingsDraftSourceOverlayEnabled.value = sourceOverlayEnabled.value
   settingsActiveTab.value = 'appearance'
   settingsOpen.value = true
   await playSettingsEnterAnimation()
@@ -677,6 +682,7 @@ const cancelSettings = () => {
   settingsDraftTone.value = componentTone.value
   settingsDraftLanguage.value = languageMode.value
   settingsDraftRenderer.value = rendererMode.value
+  settingsDraftSourceOverlayEnabled.value = sourceOverlayEnabled.value
   applyThemeMode(themeMode.value)
   applyComponentTone(componentTone.value)
   applyLanguageMode(languageMode.value)
@@ -689,6 +695,7 @@ const confirmSettings = () => {
   componentTone.value = normalizeComponentTone(settingsDraftTone.value)
   languageMode.value = normalizeLanguageMode(settingsDraftLanguage.value)
   rendererMode.value = normalizeRendererMode(settingsDraftRenderer.value)
+  sourceOverlayEnabled.value = Boolean(settingsDraftSourceOverlayEnabled.value)
   closeSettingsDialog()
 }
 
@@ -1168,6 +1175,7 @@ const addToHistory = async (newMorphData) => {
     morphData: newMorphData,
     thumbnail: newMorphData.sourceRasterUrl || renderMorphThumbnail(newMorphData, 0.52, {
       rendererMode: rendererMode.value,
+      sourceOverlayEnabled: sourceOverlayEnabled.value,
     }),
   }
 
@@ -1577,6 +1585,7 @@ const exportHistoryItem = async (id) => {
       width,
       height,
       rendererMode: normalizeRendererMode(rendererMode.value),
+      sourceOverlayEnabled: sourceOverlayEnabled.value,
       keyframes: normalizeKeyframes(entry.keyframes || keyframes.value),
       renderBackend: 'webgl',
       allow2DFallback: true,
@@ -1640,6 +1649,7 @@ const savePrefsSoon = () => {
       componentTone: componentTone.value,
       languageMode: languageMode.value,
       rendererMode: rendererMode.value,
+      sourceOverlayEnabled: sourceOverlayEnabled.value,
       sampleDensity: sampleDensity.value,
       durationSeconds: durationSeconds.value,
       keyframes: keyframes.value,
@@ -1660,6 +1670,7 @@ watch(
     componentTone,
     languageMode,
     rendererMode,
+    sourceOverlayEnabled,
     sampleDensity,
     durationSeconds,
     keyframes,
@@ -1684,6 +1695,7 @@ onMounted(async () => {
     componentTone.value = normalizeComponentTone(prefs.componentTone || componentTone.value)
     languageMode.value = normalizeLanguageMode(prefs.languageMode || languageMode.value)
     rendererMode.value = normalizeRendererMode(prefs.rendererMode || rendererMode.value)
+    sourceOverlayEnabled.value = Boolean(prefs.sourceOverlayEnabled)
     sampleDensity.value = Math.max(
       MIN_RESOLUTION_PERCENT,
       Number(prefs.sampleDensity) || sampleDensity.value,
@@ -1868,6 +1880,7 @@ onBeforeUnmount(() => {
           class="animation-column"
           :morph-data="morphData"
           :renderer-mode="rendererMode"
+          :source-overlay-enabled="sourceOverlayEnabled"
           :timeline-time="timelineTime"
           :morph-progress="morphProgress"
           :is-playing="isPlaying"
@@ -1994,6 +2007,11 @@ onBeforeUnmount(() => {
                       {{ t(`settings.renderers.${mode}`) }}
                     </option>
                   </select>
+                </label>
+
+                <label class="settings-field settings-checkbox-field">
+                  <span>{{ t('settings.fields.sourceOverlayAtStart') }}</span>
+                  <input v-model="settingsDraftSourceOverlayEnabled" type="checkbox" />
                 </label>
 
                 <div class="settings-field tone-field">

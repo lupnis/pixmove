@@ -4,11 +4,13 @@ import { clamp, sampleCellPosition, smoothstep } from '../utils/morphPlayback'
 import { getMorphShapeBuffers, interpolateCellPolygon } from '../utils/morphPolygons'
 import { getVoronoiFrameSample, getVoronoiRenderData } from '../utils/morphVoronoi'
 import { getGridFlowRenderState } from '../utils/gridFlow'
+import { createJamRenderState, sampleJamCenters } from '../utils/morphJam'
 import {
   DEFAULT_RENDERER_MODE,
   normalizeRendererMode,
   RENDERER_MODE_GRID,
   RENDERER_MODE_GRID_FLOW,
+  RENDERER_MODE_JAM,
   RENDERER_MODE_POLYGON,
   RENDERER_MODE_VORONOI,
 } from '../utils/renderModes'
@@ -16,10 +18,23 @@ import {
 const MIN_RENDER_CELL_BUDGET = 128
 const DEFAULT_PREVIEW_GRID_CELLS = 4200
 const DEFAULT_PREVIEW_POLYGON_CELLS = 3200
+const DEFAULT_PREVIEW_JAM_CELLS = 4200
 const DEFAULT_PREVIEW_VORONOI_CELLS = 7200
 const DEFAULT_EXPORT_GRID_CELLS = 5200
 const DEFAULT_EXPORT_POLYGON_CELLS = 4200
+const DEFAULT_EXPORT_JAM_CELLS = 7600
 const DEFAULT_EXPORT_VORONOI_CELLS = 14000
+
+const resolveRevealProgress = (progress) =>
+  smoothstep(clamp((Number(progress) - 0.01) / 0.22, 0, 1))
+
+const resolveRevealHash = (sourceIndex) => {
+  const seed = (Math.imul((sourceIndex + 1) ^ 0x9e3779b9, 2654435761) >>> 0)
+  return seed / 4294967295
+}
+
+const isSourceRevealed = (sourceIndex, revealProgress) =>
+  revealProgress >= 0.999 || resolveRevealHash(sourceIndex) <= revealProgress
 
 const fitContent = (content, width, height, screenWidth, screenHeight) => {
   if (!content || !width || !height) return
@@ -84,6 +99,10 @@ const resolveDefaultCellBudget = (rendererMode, manualRender) => {
     return manualRender ? DEFAULT_EXPORT_POLYGON_CELLS : DEFAULT_PREVIEW_POLYGON_CELLS
   }
 
+  if (rendererMode === RENDERER_MODE_JAM) {
+    return manualRender ? DEFAULT_EXPORT_JAM_CELLS : DEFAULT_PREVIEW_JAM_CELLS
+  }
+
   return manualRender ? DEFAULT_EXPORT_VORONOI_CELLS : DEFAULT_PREVIEW_VORONOI_CELLS
 }
 
@@ -141,6 +160,7 @@ const expandPolygonForOverlap = (points, centerX, centerY, radialScale, overlapW
 export const createPixiMorphRenderer = async (host, options = {}) => {
   const app = new Application()
   const manualRender = Boolean(options.manualRender)
+  let sourceOverlayEnabled = Boolean(options.sourceOverlayEnabled)
   const useRenderWorker = !manualRender
     && options.useRenderWorker !== false
     && typeof Worker !== 'undefined'
@@ -172,6 +192,8 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
   let renderData = null
   let shapeBuffers = null
   let gridFlowState = null
+  let jamState = null
+  let jamCoords = null
   let flowSmoothX = null
   let flowSmoothY = null
   let flowSmoothInitialized = false
@@ -216,6 +238,8 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     renderData = null
     shapeBuffers = null
     gridFlowState = null
+    jamState = null
+    jamCoords = null
     flowSmoothX = null
     flowSmoothY = null
     flowSmoothInitialized = false
@@ -253,6 +277,8 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
+    const revealProgress = resolveRevealProgress(p)
+
     const lockToTarget = p >= 0.985
     const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
     const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
@@ -270,6 +296,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
 
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]
+      if (!isSourceRevealed(sourceIndex, revealProgress)) continue
       const base2 = sourceIndex * 2
       const targetX = grid.targetPositions[base2]
       const targetY = grid.targetPositions[base2 + 1]
@@ -342,6 +369,8 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
+    const revealProgress = resolveRevealProgress(p)
+
     const grid = currentMorph.grid
     const count = gridFlowState.count
     const frameCount = Math.max(2, gridFlowState.frameCount || 2)
@@ -366,6 +395,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     polygonLayer.clear()
 
     for (let sourceIndex = 0; sourceIndex < count; sourceIndex += 1) {
+      if (!isSourceRevealed(sourceIndex, revealProgress)) continue
       const cellA = gridFlowState.sourceCellByFrame[offsetA + sourceIndex]
       const cellB = gridFlowState.sourceCellByFrame[offsetB + sourceIndex]
 
@@ -442,6 +472,8 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
+    const revealProgress = resolveRevealProgress(p)
+
     const grid = currentMorph.grid
     const lockToTarget = p >= 0.985
     const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
@@ -460,6 +492,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
 
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]
+      if (!isSourceRevealed(sourceIndex, revealProgress)) continue
       const base2 = sourceIndex * 2
       const targetX = grid.targetPositions[base2]
       const targetY = grid.targetPositions[base2 + 1]
@@ -521,15 +554,88 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     }
   }
 
-  const drawVoronoiMesh = (offsets, points) => {
+  const drawJam = (p) => {
+    if (!currentMorph?.grid || !renderData?.count || !jamState?.count || !jamCoords) {
+      polygonLayer.clear()
+      return
+    }
+
+    const revealProgress = resolveRevealProgress(p)
+    if (revealProgress <= 0.001) {
+      polygonLayer.clear()
+      return
+    }
+
+    sampleJamCenters(
+      currentMorph.grid,
+      jamState,
+      p,
+      jamCoords,
+      sampleOut,
+      currentMorph.width,
+      currentMorph.height,
+    )
+
+    const delaunay = new Delaunay(jamCoords)
+    const voronoi = delaunay.voronoi([0, 0, currentMorph.width, currentMorph.height])
+    const edgeBlend = smoothstep(clamp((p - 0.22) / 0.46, 0, 1))
+    const strokeWidth = 0.5 + edgeBlend * 0.34
+
+    polygonLayer.clear()
+
+    for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
+      const sourceIndex = renderData.indices[localIndex]
+      if (!isSourceRevealed(sourceIndex, revealProgress)) continue
+
+      const polygon = voronoi.cellPolygon(localIndex)
+      if (!polygon || polygon.length < 3) continue
+
+      const [startX, startY] = polygon[0]
+      if (!Number.isFinite(startX) || !Number.isFinite(startY)) continue
+
+      let valid = true
+      for (let pointIndex = 1; pointIndex < polygon.length; pointIndex += 1) {
+        const [px, py] = polygon[pointIndex]
+        if (!Number.isFinite(px) || !Number.isFinite(py)) {
+          valid = false
+          break
+        }
+      }
+      if (!valid) continue
+
+      polygonLayer.moveTo(startX, startY)
+
+      for (let pointIndex = 1; pointIndex < polygon.length; pointIndex += 1) {
+        const [px, py] = polygon[pointIndex]
+        polygonLayer.lineTo(px, py)
+      }
+
+      polygonLayer.closePath().fill({
+        color: renderData.colors[localIndex],
+        alpha: renderData.alphas[localIndex],
+      }).stroke({
+        width: strokeWidth,
+        color: renderData.colors[localIndex],
+        alpha: renderData.alphas[localIndex],
+        join: 'round',
+      })
+    }
+  }
+
+  const drawVoronoiMesh = (offsets, points, progress) => {
     if (!renderData?.count) {
       polygonLayer.clear()
       return
     }
 
+    const revealProgress = resolveRevealProgress(progress)
+
     polygonLayer.clear()
 
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
+      const sourceIndex = renderData.indices[localIndex]
+      if (!isSourceRevealed(sourceIndex, revealProgress)) continue
+
       const start = offsets[localIndex]
       const end = offsets[localIndex + 1]
       if (end - start < 6) continue
@@ -552,6 +658,8 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       polygonLayer.clear()
       return
     }
+
+    const revealProgress = resolveRevealProgress(p)
 
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]
@@ -576,6 +684,9 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     polygonLayer.clear()
 
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
+      const sourceIndex = renderData.indices[localIndex]
+      if (!isSourceRevealed(sourceIndex, revealProgress)) continue
+
       const polygon = voronoi.cellPolygon(localIndex)
       if (!polygon || polygon.length < 3) continue
 
@@ -658,7 +769,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
         if (!workerReady || !renderData?.count) return
 
         workerInFlight = false
-        drawVoronoiMesh(payload.offsets, payload.points)
+        drawVoronoiMesh(payload.offsets, payload.points, payload.progress)
         currentProgress = clamp(Number(payload.progress) || workerLastProgress, 0, 1)
         renderFrame()
 
@@ -717,8 +828,13 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
 
     const p = clamp(progress, 0, 1)
     if (baseSourceSprite) {
-      // Keep a short source-frame underlay to suppress first-frame grid interference.
-      baseSourceSprite.alpha = Math.max(0, 1 - p * 14)
+      if (sourceOverlayEnabled) {
+        const revealProgress = resolveRevealProgress(p)
+        const fadeAfterReveal = smoothstep(clamp((p - 0.24) / 0.08, 0, 1))
+        baseSourceSprite.alpha = revealProgress < 0.995 ? 1 : Math.max(0, 1 - fadeAfterReveal)
+      } else {
+        baseSourceSprite.alpha = 0
+      }
       baseSourceSprite.visible = baseSourceSprite.alpha > 0.001
     }
 
@@ -731,6 +847,13 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
 
     if (rendererMode === RENDERER_MODE_GRID_FLOW) {
       drawGridFlow(p)
+      currentProgress = p
+      renderFrame()
+      return
+    }
+
+    if (rendererMode === RENDERER_MODE_JAM) {
+      drawJam(p)
       currentProgress = p
       renderFrame()
       return
@@ -764,7 +887,13 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
-    const modeBudget = resolveModeBudget(currentMorph.grid, rendererMode, renderCellBudget)
+    const defaultModeBudget = resolveModeBudget(currentMorph.grid, rendererMode, renderCellBudget)
+    const modeBudget = rendererMode === RENDERER_MODE_JAM
+      ? Math.min(
+        Number(currentMorph.grid.count) || 0,
+        resolveCellBudget(rendererMode, manualRender, renderCellBudget),
+      )
+      : defaultModeBudget
 
     renderData = getVoronoiRenderData(currentMorph.grid, modeBudget)
     shapeBuffers = rendererMode === RENDERER_MODE_POLYGON
@@ -772,6 +901,12 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       : null
     gridFlowState = rendererMode === RENDERER_MODE_GRID_FLOW
       ? getGridFlowRenderState(currentMorph.grid)
+      : null
+    jamState = rendererMode === RENDERER_MODE_JAM
+      ? createJamRenderState(currentMorph.grid, renderData)
+      : null
+    jamCoords = rendererMode === RENDERER_MODE_JAM
+      ? new Float64Array(renderData.count * 2)
       : null
     flowSmoothX = gridFlowState ? new Float32Array(gridFlowState.count) : null
     flowSmoothY = gridFlowState ? new Float32Array(gridFlowState.count) : null
@@ -847,6 +982,13 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     }
   }
 
+  const setSourceOverlayEnabled = (enabled) => {
+    sourceOverlayEnabled = Boolean(enabled)
+    if (currentMorph?.grid && renderData?.count) {
+      applyProgress(currentProgress)
+    }
+  }
+
   const ticker = () => {
     resizeLayout()
   }
@@ -873,6 +1015,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     canvas: app.canvas,
     setMorphData,
     setRendererMode,
+    setSourceOverlayEnabled,
     setProgress: applyProgress,
     renderFrame,
     destroy,

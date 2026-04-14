@@ -61,6 +61,10 @@ const props = defineProps({
     type: String,
     default: 'voronoi',
   },
+  sourceOverlayEnabled: {
+    type: Boolean,
+    default: false,
+  },
   busy: {
     type: Boolean,
     default: false,
@@ -163,11 +167,20 @@ watch(
   },
 )
 
+watch(
+  () => props.sourceOverlayEnabled,
+  (value) => {
+    if (!renderer) return
+    renderer.setSourceOverlayEnabled?.(value)
+  },
+)
+
 onMounted(async () => {
   if (!pixiHostRef.value) return
 
   renderer = await createPixiMorphRenderer(pixiHostRef.value, {
     rendererMode: props.rendererMode,
+    sourceOverlayEnabled: props.sourceOverlayEnabled,
   })
 
   if (props.morphData) {

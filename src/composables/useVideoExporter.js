@@ -117,6 +117,20 @@ const createFrameSurface = (width, height) => {
   return { canvas, ctx }
 }
 
+const loadSourceOverlayImage = async (morphData, enabled) => {
+  if (!enabled || !morphData?.sourceRasterUrl || typeof Image === 'undefined') {
+    return null
+  }
+
+  return new Promise((resolve) => {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.onload = () => resolve(image)
+    image.onerror = () => resolve(null)
+    image.src = morphData.sourceRasterUrl
+  })
+}
+
 const computeMorphProgress = (keyframes, timelineT) =>
   keyframes?.length ? evaluateTimeline(keyframes, timelineT) : timelineT
 
@@ -187,6 +201,7 @@ const exportMorphGif2D = async (morphData, options = {}) => {
     width = morphData.width,
     height = morphData.height,
     rendererMode = DEFAULT_RENDERER_MODE,
+    sourceOverlayEnabled = false,
     renderCellBudget,
     keyframes,
     onProgress,
@@ -195,6 +210,7 @@ const exportMorphGif2D = async (morphData, options = {}) => {
 
   const normalizedRendererMode = normalizeRendererMode(rendererMode)
   const resolvedCellBudget = resolveRenderCellBudget(normalizedRendererMode, renderCellBudget)
+  const sourceOverlayImage = await loadSourceOverlayImage(morphData, sourceOverlayEnabled)
 
   return encodeGifFrames({
     width,
@@ -209,6 +225,8 @@ const exportMorphGif2D = async (morphData, options = {}) => {
         width,
         height,
         rendererMode: normalizedRendererMode,
+        sourceOverlayEnabled,
+        sourceOverlayImage,
         ...(Number.isFinite(Number(resolvedCellBudget)) ? { renderCellBudget: resolvedCellBudget } : {}),
       })
     },
@@ -222,6 +240,7 @@ const exportMorphGifWebGL = async (morphData, options = {}) => {
     width = morphData.width,
     height = morphData.height,
     rendererMode = DEFAULT_RENDERER_MODE,
+    sourceOverlayEnabled = false,
     renderCellBudget,
     keyframes,
     onProgress,
@@ -249,6 +268,7 @@ const exportMorphGifWebGL = async (morphData, options = {}) => {
       manualRender: true,
       resolution: 1,
       rendererMode: normalizedRendererMode,
+      sourceOverlayEnabled,
       ...(Number.isFinite(Number(resolvedCellBudget)) ? { renderCellBudget: resolvedCellBudget } : {}),
     })
 
