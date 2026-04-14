@@ -57,6 +57,10 @@ const props = defineProps({
       fps: 24,
     }),
   },
+  rendererMode: {
+    type: String,
+    default: 'voronoi',
+  },
   busy: {
     type: Boolean,
     default: false,
@@ -149,10 +153,22 @@ watch(
   },
 )
 
+watch(
+  () => props.rendererMode,
+  async (value) => {
+    if (!renderer) return
+    await renderer.setRendererMode?.(value)
+    renderer.setProgress(props.morphProgress)
+    renderer.renderFrame()
+  },
+)
+
 onMounted(async () => {
   if (!pixiHostRef.value) return
 
-  renderer = await createPixiMorphRenderer(pixiHostRef.value)
+  renderer = await createPixiMorphRenderer(pixiHostRef.value, {
+    rendererMode: props.rendererMode,
+  })
 
   if (props.morphData) {
     await renderer.setMorphData(props.morphData)

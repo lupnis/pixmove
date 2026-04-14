@@ -22,6 +22,12 @@ export const messages = {
         theme: '主题',
         componentTone: '组件颜色',
         language: '语言',
+        renderer: '渲染器',
+      },
+      renderers: {
+        grid: '网格渲染',
+        polygon: '多边形渲染',
+        voronoi: 'Voronoi 渲染',
       },
       toneGroupAria: '组件颜色',
       cache: {
@@ -217,6 +223,12 @@ export const messages = {
         theme: '主題',
         componentTone: '元件顏色',
         language: '語言',
+        renderer: '渲染器',
+      },
+      renderers: {
+        grid: '網格渲染',
+        polygon: '多邊形渲染',
+        voronoi: 'Voronoi 渲染',
       },
       toneGroupAria: '元件顏色',
       cache: {
@@ -412,6 +424,12 @@ export const messages = {
         theme: 'Theme',
         componentTone: 'Component Color',
         language: 'Language',
+        renderer: 'Renderer',
+      },
+      renderers: {
+        grid: 'Grid',
+        polygon: 'Polygon',
+        voronoi: 'Voronoi',
       },
       toneGroupAria: 'Component colors',
       cache: {

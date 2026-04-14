@@ -8,10 +8,12 @@ import StatusBar from './components/StatusBar.vue'
 import { builtInTemplates } from './data/templates'
 import {
   buildMorphData,
+  DEFAULT_RENDERER_MODE,
   DEFAULT_MORPH_HEIGHT,
   DEFAULT_MORPH_WIDTH,
   MAX_RESOLUTION_PERCENT,
   MIN_RESOLUTION_PERCENT,
+  normalizeRendererMode,
   renderMorphThumbnail,
   resolveCellResolution,
 } from './composables/useMorphEngine'
@@ -40,6 +42,7 @@ import {
   THEME_MODE_OPTIONS,
 } from './config/uiSettings'
 import { useI18n } from './i18n/useI18n'
+import { RENDERER_MODE_OPTIONS } from './utils/renderModes'
 import { clamp, formatSeconds, uid } from './utils/format'
 import { evaluateTimeline, makeDefaultKeyframes, normalizeKeyframes } from './utils/timeline'
 
@@ -93,6 +96,8 @@ const settingsActiveTab = ref('appearance')
 const settingsDraftTheme = ref(DEFAULT_THEME_MODE)
 const settingsDraftTone = ref(DEFAULT_COMPONENT_TONE)
 const settingsDraftLanguage = ref(DEFAULT_LANGUAGE_MODE)
+const rendererMode = ref(DEFAULT_RENDERER_MODE)
+const settingsDraftRenderer = ref(DEFAULT_RENDERER_MODE)
 const showClearRecordsConfirm = ref(false)
 const isClearingRecords = ref(false)
 const systemPrefersDark = ref(true)
@@ -266,6 +271,7 @@ const buildCacheStats = () => {
       sourceName: item.sourceName,
       targetName: item.targetName,
       pointCount: item.pointCount,
+      rendererMode: item.rendererMode,
       durationSeconds: item.durationSeconds,
       sampleDensity: item.sampleDensity,
       keyframes: item.keyframes,
@@ -284,6 +290,7 @@ const buildCacheStats = () => {
     themeMode: themeMode.value,
     componentTone: componentTone.value,
     languageMode: languageMode.value,
+    rendererMode: rendererMode.value,
     sampleDensity: sampleDensity.value,
     durationSeconds: durationSeconds.value,
     keyframes: keyframes.value,
@@ -385,6 +392,7 @@ const cacheStatsRefreshFingerprint = computed(() => [
   themeMode.value,
   componentTone.value,
   languageMode.value,
+  rendererMode.value,
   sampleDensity.value,
   durationSeconds.value,
   keyframes.value.length,
@@ -458,15 +466,7 @@ const centerLayoutStyle = computed(() => {
 })
 
 const densityMax = computed(() => {
-  const sourceMax = sourceImage.value.url
-    ? Math.max(sourceResolutionBase.value.width, sourceResolutionBase.value.height)
-    : 0
-  const targetMax = targetImage.value.url
-    ? Math.max(targetResolutionBase.value.width, targetResolutionBase.value.height)
-    : 0
-  const highest = Math.max(sourceMax, targetMax)
-
-  return Math.max(MAX_RESOLUTION_PERCENT, Math.round(highest || MAX_RESOLUTION_PERCENT))
+  return MAX_RESOLUTION_PERCENT
 })
 
 const effectiveResolution = computed(() =>
@@ -575,6 +575,7 @@ const openSettings = async () => {
   settingsDraftTheme.value = themeMode.value
   settingsDraftTone.value = componentTone.value
   settingsDraftLanguage.value = languageMode.value
+  settingsDraftRenderer.value = rendererMode.value
   settingsActiveTab.value = 'appearance'
   settingsOpen.value = true
   await playSettingsEnterAnimation()
@@ -585,6 +586,7 @@ const cancelSettings = () => {
   settingsDraftTheme.value = themeMode.value
   settingsDraftTone.value = componentTone.value
   settingsDraftLanguage.value = languageMode.value
+  settingsDraftRenderer.value = rendererMode.value
   applyThemeMode(themeMode.value)
   applyComponentTone(componentTone.value)
   applyLanguageMode(languageMode.value)
@@ -596,6 +598,7 @@ const confirmSettings = () => {
   themeMode.value = normalizeThemeMode(settingsDraftTheme.value)
   componentTone.value = normalizeComponentTone(settingsDraftTone.value)
   languageMode.value = normalizeLanguageMode(settingsDraftLanguage.value)
+  rendererMode.value = normalizeRendererMode(settingsDraftRenderer.value)
   closeSettingsDialog()
 }
 
@@ -1009,6 +1012,8 @@ const detailToMorphOptions = (density) => {
   const ratio = clamp((d - MIN_RESOLUTION_PERCENT) / range, 0, 1)
 
   return {
+    resolutionReferenceWidth: targetResolutionBase.value.width,
+    resolutionReferenceHeight: targetResolutionBase.value.height,
     resolutionPercent: d,
     maxResolutionPercent: maxDensity,
     simulationFrames: clamp(Math.round(72 + ratio * 40), 72, 132),
@@ -1076,12 +1081,15 @@ const addToHistory = async (newMorphData) => {
     targetName: targetImage.value.name || t('imagePair.targetTitle'),
     targetUrl: targetImage.value.url,
     pointCount: newMorphData.meta.pointCount,
+    rendererMode: rendererMode.value,
     durationSeconds: durationSeconds.value,
     sampleDensity: sampleDensity.value,
     keyframes: normalizeKeyframes(keyframes.value),
     exportSettings: { ...exportSettings.value },
     morphData: newMorphData,
-    thumbnail: newMorphData.sourceRasterUrl || renderMorphThumbnail(newMorphData),
+    thumbnail: newMorphData.sourceRasterUrl || renderMorphThumbnail(newMorphData, 0.52, {
+      rendererMode: rendererMode.value,
+    }),
   }
 
   const entry = withHistoryUiState(record)
@@ -1343,6 +1351,7 @@ const replayHistoryItem = (id) => {
     MIN_RESOLUTION_PERCENT,
     Number(entry.sampleDensity ?? entry.morphData?.meta?.resolutionPercent ?? sampleDensity.value) || sampleDensity.value,
   )
+  rendererMode.value = normalizeRendererMode(entry.rendererMode || rendererMode.value)
   durationSeconds.value = clamp(Number(entry.durationSeconds) || 4, 1, 12)
   keyframes.value = normalizeKeyframes(entry.keyframes || makeDefaultKeyframes())
 
@@ -1477,6 +1486,7 @@ const exportHistoryItem = async (id) => {
       fps,
       width,
       height,
+      rendererMode: normalizeRendererMode(rendererMode.value),
       keyframes: normalizeKeyframes(entry.keyframes || keyframes.value),
       renderBackend: 'webgl',
       allow2DFallback: true,
@@ -1539,6 +1549,7 @@ const savePrefsSoon = () => {
       themeMode: themeMode.value,
       componentTone: componentTone.value,
       languageMode: languageMode.value,
+      rendererMode: rendererMode.value,
       sampleDensity: sampleDensity.value,
       durationSeconds: durationSeconds.value,
       keyframes: keyframes.value,
@@ -1558,6 +1569,7 @@ watch(
     themeMode,
     componentTone,
     languageMode,
+    rendererMode,
     sampleDensity,
     durationSeconds,
     keyframes,
@@ -1581,6 +1593,7 @@ onMounted(async () => {
     themeMode.value = normalizeThemeMode(prefs.themeMode || themeMode.value)
     componentTone.value = normalizeComponentTone(prefs.componentTone || componentTone.value)
     languageMode.value = normalizeLanguageMode(prefs.languageMode || languageMode.value)
+    rendererMode.value = normalizeRendererMode(prefs.rendererMode || rendererMode.value)
     sampleDensity.value = Math.max(
       MIN_RESOLUTION_PERCENT,
       Number(prefs.sampleDensity) || sampleDensity.value,
@@ -1641,6 +1654,7 @@ onMounted(async () => {
 
     historyItems.value = loaded.map((item) => withHistoryUiState({
       ...item,
+      rendererMode: normalizeRendererMode(item.rendererMode || rendererMode.value),
       sampleDensity: Math.max(
         MIN_RESOLUTION_PERCENT,
         Number(item.sampleDensity ?? item.morphData?.meta?.resolutionPercent ?? sampleDensity.value) || sampleDensity.value,
@@ -1762,6 +1776,7 @@ onBeforeUnmount(() => {
         <AnimationPanel
           class="animation-column"
           :morph-data="morphData"
+          :renderer-mode="rendererMode"
           :timeline-time="timelineTime"
           :morph-progress="morphProgress"
           :is-playing="isPlaying"
@@ -1877,6 +1892,15 @@ onBeforeUnmount(() => {
                   <select v-model="settingsDraftLanguage">
                     <option v-for="mode in LANGUAGE_MODE_OPTIONS" :key="mode.value" :value="mode.value">
                       {{ mode.label }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="settings-field">
+                  <span>{{ t('settings.fields.renderer') }}</span>
+                  <select v-model="settingsDraftRenderer">
+                    <option v-for="mode in RENDERER_MODE_OPTIONS" :key="mode" :value="mode">
+                      {{ t(`settings.renderers.${mode}`) }}
                     </option>
                   </select>
                 </label>

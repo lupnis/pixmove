@@ -14,14 +14,16 @@ const collectGridCells = (pixels, width, height, side) => {
   const bounds = new Uint16Array(count * 4)
   const colors = new Uint8Array(count * 4)
   const centers = new Float32Array(count * 2)
+  const rasterWidth = Math.max(1, Math.round(width))
+  const rasterHeight = Math.max(1, Math.round(height))
 
   for (let gy = 0; gy < side; gy += 1) {
-    const y0 = Math.floor((gy * height) / side)
-    const y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * height) / side))
+    const y0 = Math.floor((gy * rasterHeight) / side)
+    const y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * rasterHeight) / side))
 
     for (let gx = 0; gx < side; gx += 1) {
-      const x0 = Math.floor((gx * width) / side)
-      const x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * width) / side))
+      const x0 = Math.floor((gx * rasterWidth) / side)
+      const x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * rasterWidth) / side))
       const index = gy * side + gx
       const base4 = index * 4
       const base2 = index * 2
@@ -34,7 +36,7 @@ const collectGridCells = (pixels, width, height, side) => {
 
       for (let y = y0; y < y1; y += 1) {
         for (let x = x0; x < x1; x += 1) {
-          const pixel = (y * width + x) * 4
+          const pixel = (y * rasterWidth + x) * 4
           r += pixels[pixel]
           g += pixels[pixel + 1]
           b += pixels[pixel + 2]
@@ -48,17 +50,27 @@ const collectGridCells = (pixels, width, height, side) => {
       colors[base4 + 2] = Math.round(b / Math.max(1, samples))
       colors[base4 + 3] = Math.round(a / Math.max(1, samples))
 
-      bounds[base4] = x0
-      bounds[base4 + 1] = y0
-      bounds[base4 + 2] = Math.max(1, x1 - x0)
-      bounds[base4 + 3] = Math.max(1, y1 - y0)
+      const boundX0 = clamp(x0, 0, Math.max(0, rasterWidth - 1))
+      const boundY0 = clamp(y0, 0, Math.max(0, rasterHeight - 1))
+      const boundX1 = clamp(x1, boundX0 + 1, rasterWidth)
+      const boundY1 = clamp(y1, boundY0 + 1, rasterHeight)
 
-      centers[base2] = x0 + (x1 - x0) * 0.5
-      centers[base2 + 1] = y0 + (y1 - y0) * 0.5
+      bounds[base4] = boundX0
+      bounds[base4 + 1] = boundY0
+      bounds[base4 + 2] = Math.max(1, boundX1 - boundX0)
+      bounds[base4 + 3] = Math.max(1, boundY1 - boundY0)
+
+      centers[base2] = (x0 + x1) * 0.5
+      centers[base2 + 1] = (y0 + y1) * 0.5
     }
   }
 
-  return { bounds, colors, centers, count }
+  return {
+    bounds,
+    colors,
+    centers,
+    count,
+  }
 }
 
 const computeTargetWeights = (targetColors, side) => {
@@ -116,11 +128,14 @@ const matchPayload = async (payload) => {
   const source = new Uint8ClampedArray(sourcePixels)
   const target = new Uint8ClampedArray(targetPixels)
 
+  const rasterWidth = Math.max(1, Math.round(width))
+  const rasterHeight = Math.max(1, Math.round(height))
+
   postMessage({ type: 'progress', id: payload.id, progress: 0.08, phase: 'cell_sampling_a' })
-  const sourceGrid = collectGridCells(source, width, height, resolution)
+  const sourceGrid = collectGridCells(source, rasterWidth, rasterHeight, resolution)
 
   postMessage({ type: 'progress', id: payload.id, progress: 0.16, phase: 'cell_sampling_b' })
-  const targetGrid = collectGridCells(target, width, height, resolution)
+  const targetGrid = collectGridCells(target, rasterWidth, rasterHeight, resolution)
 
   const targetWeightInfo = computeTargetWeights(targetGrid.colors, resolution)
 
@@ -150,8 +165,8 @@ const matchPayload = async (payload) => {
   const motionPath = await simulateMotionWasm(
     sourceGrid.centers,
     targetPositions,
-    width,
-    height,
+    rasterWidth,
+    rasterHeight,
     resolution,
     simulationFrames,
   )

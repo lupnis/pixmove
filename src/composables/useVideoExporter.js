@@ -2,6 +2,21 @@
 import { drawMorphFrame } from './useMorphEngine'
 import { createPixiMorphRenderer } from './usePixiMorphRenderer'
 import { evaluateTimeline } from '../utils/timeline'
+import { DEFAULT_RENDERER_MODE, normalizeRendererMode } from '../utils/renderModes'
+
+const EXPORT_VORONOI_CELL_BUDGET = 4600
+const EXPORT_GRID_CELL_BUDGET = 5600
+const EXPORT_POLYGON_CELL_BUDGET = 4800
+
+const resolveRenderCellBudget = (rendererMode, explicitBudget) => {
+  if (Number.isFinite(Number(explicitBudget))) {
+    return Math.max(128, Math.round(Number(explicitBudget)))
+  }
+
+  if (rendererMode === 'grid') return EXPORT_GRID_CELL_BUDGET
+  if (rendererMode === 'polygon') return EXPORT_POLYGON_CELL_BUDGET
+  return EXPORT_VORONOI_CELL_BUDGET
+}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -177,10 +192,15 @@ const exportMorphGif2D = async (morphData, options = {}) => {
     fps = 24,
     width = morphData.width,
     height = morphData.height,
+    rendererMode = DEFAULT_RENDERER_MODE,
+    renderCellBudget,
     keyframes,
     onProgress,
     signal,
   } = options
+
+  const normalizedRendererMode = normalizeRendererMode(rendererMode)
+  const resolvedCellBudget = resolveRenderCellBudget(normalizedRendererMode, renderCellBudget)
 
   return encodeGifFrames({
     width,
@@ -191,7 +211,12 @@ const exportMorphGif2D = async (morphData, options = {}) => {
     onProgress,
     signal,
     renderFrame: async (ctx, morphProgress) => {
-      drawMorphFrame(ctx, morphData, morphProgress, { width, height })
+      drawMorphFrame(ctx, morphData, morphProgress, {
+        width,
+        height,
+        rendererMode: normalizedRendererMode,
+        renderCellBudget: resolvedCellBudget,
+      })
     },
   })
 }
@@ -202,10 +227,15 @@ const exportMorphGifWebGL = async (morphData, options = {}) => {
     fps = 24,
     width = morphData.width,
     height = morphData.height,
+    rendererMode = DEFAULT_RENDERER_MODE,
+    renderCellBudget,
     keyframes,
     onProgress,
     signal,
   } = options
+
+  const normalizedRendererMode = normalizeRendererMode(rendererMode)
+  const resolvedCellBudget = resolveRenderCellBudget(normalizedRendererMode, renderCellBudget)
 
   ensureNotAborted(signal)
 
@@ -224,6 +254,8 @@ const exportMorphGifWebGL = async (morphData, options = {}) => {
       height,
       manualRender: true,
       resolution: 1,
+      rendererMode: normalizedRendererMode,
+      renderCellBudget: resolvedCellBudget,
     })
 
     await renderer.setMorphData(morphData)
