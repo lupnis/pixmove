@@ -26,7 +26,7 @@ export const messages = {
       },
       renderers: {
         grid: '网格渲染',
-        grid_flow: '网格运动渲染',
+        grid_flow: '网格占位交换渲染',
         polygon: '多边形渲染',
         voronoi: 'Voronoi 渲染',
       },
@@ -228,7 +228,7 @@ export const messages = {
       },
       renderers: {
         grid: '網格渲染',
-        grid_flow: '網格流動渲染',
+        grid_flow: '網格佔位交換渲染',
         polygon: '多邊形渲染',
         voronoi: 'Voronoi 渲染',
       },
@@ -430,7 +430,7 @@ export const messages = {
       },
       renderers: {
         grid: 'Grid',
-        grid_flow: 'Grid Flow',
+        grid_flow: 'Grid Occupancy Swap',
         polygon: 'Polygon',
         voronoi: 'Voronoi',
       },
@@ -632,7 +632,7 @@ export const messages = {
       },
       renderers: {
         grid: 'Grille',
-        grid_flow: 'Flux de grille',
+        grid_flow: 'Echange d\'occupation de grille',
         polygon: 'Polygone',
         voronoi: 'Voronoi',
       },

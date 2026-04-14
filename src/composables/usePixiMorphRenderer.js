@@ -1,8 +1,9 @@
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { Delaunay } from 'd3-delaunay'
-import { clamp, sampleCellPosition, sampleGridFlowPosition, smoothstep } from '../utils/morphPlayback'
+import { clamp, sampleCellPosition, smoothstep } from '../utils/morphPlayback'
 import { getMorphShapeBuffers, interpolateCellPolygon } from '../utils/morphPolygons'
 import { getVoronoiFrameSample, getVoronoiRenderData } from '../utils/morphVoronoi'
+import { getGridFlowRenderState } from '../utils/gridFlow'
 import {
   DEFAULT_RENDERER_MODE,
   normalizeRendererMode,
@@ -170,6 +171,11 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
 
   let renderData = null
   let shapeBuffers = null
+  let gridFlowState = null
+  let flowSmoothX = null
+  let flowSmoothY = null
+  let flowSmoothInitialized = false
+  let flowLastProgress = -1
   let voronoiFrameSample = null
   let voronoiCoords = null
   let baseSourceSprite = null
@@ -209,6 +215,11 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     content.addChild(polygonLayer)
     renderData = null
     shapeBuffers = null
+    gridFlowState = null
+    flowSmoothX = null
+    flowSmoothY = null
+    flowSmoothInitialized = false
+    flowLastProgress = -1
     voronoiFrameSample = null
     voronoiCoords = null
 
@@ -326,84 +337,103 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
   }
 
   const drawGridFlow = (p) => {
-    if (!currentMorph?.grid || !renderData?.count) {
+    if (!currentMorph?.grid || !gridFlowState?.count || !gridFlowState.sourceCellByFrame?.length) {
       polygonLayer.clear()
       return
     }
 
-    const lockToTarget = p >= 0.985
-    const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
-    const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
-    const motionT = lockToTarget ? 1 : p
-    const sizeProgress = smoothstep(clamp((p - 0.68) / 0.32, 0, 1))
     const grid = currentMorph.grid
+    const count = gridFlowState.count
+    const frameCount = Math.max(2, gridFlowState.frameCount || 2)
+    const frameProgress = clamp(p, 0, 1) * (frameCount - 1)
+    const frameA = Math.floor(frameProgress)
+    const frameB = Math.min(frameCount - 1, frameA + 1)
+    const localT = smoothstep(frameProgress - frameA)
+    const offsetA = frameA * count
+    const offsetB = frameB * count
+    const tailBlend = smoothstep(clamp((p - 0.8) / 0.2, 0, 1))
     const viewScale = Math.max(0.0001, Math.min(app.screen.width / currentMorph.width, app.screen.height / currentMorph.height))
-    const overlapPxBase = 2.35 + (3.05 - 2.35) * tailBlend
-    const overlapWorldBase = overlapPxBase / viewScale
-    const samplePrevOut = { x: 0, y: 0 }
-    const motionStep = clamp(2 / Math.max(2, Number(grid?.frameCount) || 96), 0.006, 0.03)
-    const motionBoost = 1 - tailBlend * 0.88
+    const overlapPxBase = 2.8 + (3.5 - 2.8) * tailBlend
+    const resetSmoothing = !flowSmoothInitialized || p < flowLastProgress - 0.0001
+    const forceTarget = p >= 0.999
+    const progressDelta = resetSmoothing ? 0 : Math.max(0, p - flowLastProgress)
+    const virtualFrameSpan = progressDelta * Math.max(1, frameCount - 1)
+    const stepBudgetPx = forceTarget
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0.15, virtualFrameSpan)
+    const maxStepWorld = stepBudgetPx / viewScale
 
     polygonLayer.clear()
 
-    for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
-      const sourceIndex = renderData.indices[localIndex]
-      const base2 = sourceIndex * 2
-      const targetX = grid.targetPositions[base2]
-      const targetY = grid.targetPositions[base2 + 1]
+    for (let sourceIndex = 0; sourceIndex < count; sourceIndex += 1) {
+      const cellA = gridFlowState.sourceCellByFrame[offsetA + sourceIndex]
+      const cellB = gridFlowState.sourceCellByFrame[offsetB + sourceIndex]
 
-      if (lockToTarget) {
-        sampleOut.x = targetX
-        sampleOut.y = targetY
+      const baseA = cellA * 4
+      const baseB = cellB * 4
+
+      const cellAX = grid.cellBounds?.[baseA] ?? 0
+      const cellAY = grid.cellBounds?.[baseA + 1] ?? 0
+      const cellAW = Math.max(1, grid.cellBounds?.[baseA + 2] ?? 1)
+      const cellAH = Math.max(1, grid.cellBounds?.[baseA + 3] ?? 1)
+
+      const cellBX = grid.cellBounds?.[baseB] ?? cellAX
+      const cellBY = grid.cellBounds?.[baseB + 1] ?? cellAY
+      const cellBW = Math.max(1, grid.cellBounds?.[baseB + 2] ?? cellAW)
+      const cellBH = Math.max(1, grid.cellBounds?.[baseB + 3] ?? cellAH)
+
+      const centerAX = cellAX + cellAW * 0.5
+      const centerAY = cellAY + cellAH * 0.5
+      const centerBX = cellBX + cellBW * 0.5
+      const centerBY = cellBY + cellBH * 0.5
+
+      const targetCenterX = centerAX + (centerBX - centerAX) * localT
+      const targetCenterY = centerAY + (centerBY - centerAY) * localT
+
+      if (resetSmoothing || forceTarget) {
+        flowSmoothX[sourceIndex] = targetCenterX
+        flowSmoothY[sourceIndex] = targetCenterY
       } else {
-        sampleGridFlowPosition(grid, sourceIndex, motionT, sampleOut)
-        sampleOut.x += (targetX - sampleOut.x) * settleBlend
-        sampleOut.y += (targetY - sampleOut.y) * settleBlend
+        const deltaX = targetCenterX - flowSmoothX[sourceIndex]
+        const deltaY = targetCenterY - flowSmoothY[sourceIndex]
+        const deltaLength = Math.hypot(deltaX, deltaY)
+
+        if (deltaLength > maxStepWorld) {
+          const ratio = maxStepWorld / deltaLength
+          flowSmoothX[sourceIndex] += deltaX * ratio
+          flowSmoothY[sourceIndex] += deltaY * ratio
+        } else {
+          flowSmoothX[sourceIndex] = targetCenterX
+          flowSmoothY[sourceIndex] = targetCenterY
+        }
       }
 
-      let motionDistance = 0
-      if (!lockToTarget) {
-        const previousT = Math.max(0, motionT - motionStep)
-        sampleGridFlowPosition(grid, sourceIndex, previousT, samplePrevOut)
-        const previousSettle = smoothstep(clamp((previousT - 0.76) / 0.24, 0, 1))
-        samplePrevOut.x += (targetX - samplePrevOut.x) * previousSettle
-        samplePrevOut.y += (targetY - samplePrevOut.y) * previousSettle
-        motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
-      }
+      const centerX = flowSmoothX[sourceIndex]
+      const centerY = flowSmoothY[sourceIndex]
 
-      const motionOverlapWorld = Math.min(5 / viewScale, motionDistance * 0.7 * motionBoost)
-      const overlapWorld = overlapWorldBase + motionOverlapWorld
-      const strokeWidth = Math.max(
-        1,
-        overlapPxBase * 1.25 + Math.min(3.4, motionDistance * viewScale * 0.5 * motionBoost),
-      )
-
-      const boundBase = sourceIndex * 4
-      const sourceWidth = grid.cellBounds?.[boundBase + 2] ?? 1
-      const sourceHeight = grid.cellBounds?.[boundBase + 3] ?? 1
-      const mappedTargetIndex = clamp(Number(grid.sourceToTarget?.[sourceIndex] ?? sourceIndex), 0, grid.count - 1)
-      const targetBoundBase = mappedTargetIndex * 4
-      const targetWidth = grid.cellBounds?.[targetBoundBase + 2] ?? sourceWidth
-      const targetHeight = grid.cellBounds?.[targetBoundBase + 3] ?? sourceHeight
-
-      const drawWidth = sourceWidth + (targetWidth - sourceWidth) * sizeProgress + overlapWorld * 2
-      const drawHeight = sourceHeight + (targetHeight - sourceHeight) * sizeProgress + overlapWorld * 2
+      const overlapWorld = overlapPxBase / viewScale
+      const strokeWidth = Math.max(1, overlapPxBase * 1.2)
+      const drawWidth = Math.max(cellAW, cellBW) + overlapWorld * 2
+      const drawHeight = Math.max(cellAH, cellBH) + overlapWorld * 2
 
       polygonLayer.rect(
-        sampleOut.x - drawWidth * 0.5,
-        sampleOut.y - drawHeight * 0.5,
+        centerX - drawWidth * 0.5,
+        centerY - drawHeight * 0.5,
         drawWidth,
         drawHeight,
       ).fill({
-        color: renderData.colors[localIndex],
-        alpha: renderData.alphas[localIndex],
+        color: gridFlowState.colors[sourceIndex],
+        alpha: gridFlowState.alphas[sourceIndex],
       }).stroke({
         width: strokeWidth,
-        color: renderData.colors[localIndex],
-        alpha: renderData.alphas[localIndex],
+        color: gridFlowState.colors[sourceIndex],
+        alpha: gridFlowState.alphas[sourceIndex],
         join: 'round',
       })
     }
+
+    flowSmoothInitialized = true
+    flowLastProgress = p
   }
 
   const drawPolygon = (p) => {
@@ -740,6 +770,13 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     shapeBuffers = rendererMode === RENDERER_MODE_POLYGON
       ? getMorphShapeBuffers(currentMorph.grid)
       : null
+    gridFlowState = rendererMode === RENDERER_MODE_GRID_FLOW
+      ? getGridFlowRenderState(currentMorph.grid)
+      : null
+    flowSmoothX = gridFlowState ? new Float32Array(gridFlowState.count) : null
+    flowSmoothY = gridFlowState ? new Float32Array(gridFlowState.count) : null
+    flowSmoothInitialized = false
+    flowLastProgress = -1
     voronoiFrameSample = rendererMode === RENDERER_MODE_VORONOI
       ? getVoronoiFrameSample(currentMorph.grid, modeBudget)
       : null

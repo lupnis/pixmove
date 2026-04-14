@@ -1,7 +1,8 @@
 import { Delaunay } from 'd3-delaunay'
-import { clamp, sampleCellPosition, sampleGridFlowPosition, smoothstep } from '../utils/morphPlayback'
+import { clamp, sampleCellPosition, smoothstep } from '../utils/morphPlayback'
 import { getMorphShapeBuffers, interpolateCellPolygon } from '../utils/morphPolygons'
 import { getVoronoiRenderData } from '../utils/morphVoronoi'
+import { getGridFlowRenderState } from '../utils/gridFlow'
 import {
   DEFAULT_RENDERER_MODE,
   normalizeRendererMode,
@@ -272,6 +273,7 @@ const getRenderFrameState = (grid, rendererMode, maxCells) => {
         fillStyles: [],
       },
       shapeBuffers: null,
+      gridFlowState: null,
       coords: new Float64Array(0),
       polygonPoints: new Float32Array(8),
       sampleOut: { x: 0, y: 0 },
@@ -293,9 +295,15 @@ const getRenderFrameState = (grid, rendererMode, maxCells) => {
   }
 
   const renderData = getVoronoiRenderData(grid, budget)
+  const gridFlowState = normalizedMode === RENDERER_MODE_GRID_FLOW ? getGridFlowRenderState(grid) : null
   const state = {
     renderData,
     shapeBuffers: normalizedMode === RENDERER_MODE_POLYGON ? getMorphShapeBuffers(grid) : null,
+    gridFlowState,
+    flowSmoothX: gridFlowState ? new Float32Array(gridFlowState.count) : null,
+    flowSmoothY: gridFlowState ? new Float32Array(gridFlowState.count) : null,
+    flowSmoothInitialized: false,
+    flowLastProgress: -1,
     coords: new Float64Array(renderData.count * 2),
     polygonPoints: new Float32Array(8),
     sampleOut: { x: 0, y: 0 },
@@ -524,69 +532,94 @@ const drawGridCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => {
 }
 
 const drawGridFlowCells = (ctx, frameState, grid, p, scale, offsetX, offsetY) => {
-  const { renderData, sampleOut } = frameState
-  const lockToTarget = p >= 0.985
-  const tailBlend = smoothstep(clamp((p - 0.82) / 0.18, 0, 1))
-  const settleBlend = smoothstep(clamp((p - 0.76) / 0.24, 0, 1))
-  const motionT = lockToTarget ? 1 : p
-  const sizeProgress = smoothstep(clamp((p - 0.68) / 0.32, 0, 1))
-  const overlapPxBase = 2.35 + (3.05 - 2.35) * tailBlend
-  const overlapWorldBase = overlapPxBase / Math.max(0.0001, scale)
-  const samplePrevOut = { x: 0, y: 0 }
-  const motionStep = clamp(2 / Math.max(2, Number(grid?.frameCount) || 96), 0.006, 0.03)
-  const motionBoost = 1 - tailBlend * 0.88
+  const flowState = frameState.gridFlowState
+  if (!flowState?.count || !flowState.sourceCellByFrame?.length) return
+  if (!frameState.flowSmoothX || !frameState.flowSmoothY) return
 
-  for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
-    const sourceIndex = renderData.indices[localIndex]
-    const base2 = sourceIndex * 2
-    const targetX = grid.targetPositions[base2]
-    const targetY = grid.targetPositions[base2 + 1]
+  const count = flowState.count
+  const frameCount = Math.max(2, flowState.frameCount || 2)
+  const frameProgress = clamp(p, 0, 1) * (frameCount - 1)
+  const frameA = Math.floor(frameProgress)
+  const frameB = Math.min(frameCount - 1, frameA + 1)
+  const localT = smoothstep(frameProgress - frameA)
+  const offsetA = frameA * count
+  const offsetB = frameB * count
+  const tailBlend = smoothstep(clamp((p - 0.8) / 0.2, 0, 1))
+  const overlapPxBase = 2.8 + (3.5 - 2.8) * tailBlend
+  const resetSmoothing = !frameState.flowSmoothInitialized || p < frameState.flowLastProgress - 0.0001
+  const forceTarget = p >= 0.999
+  const progressDelta = resetSmoothing ? 0 : Math.max(0, p - frameState.flowLastProgress)
+  const virtualFrameSpan = progressDelta * Math.max(1, frameCount - 1)
+  const stepBudgetPx = forceTarget
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0.15, virtualFrameSpan)
+  const maxStepWorld = stepBudgetPx / Math.max(0.0001, scale)
+  const smoothX = frameState.flowSmoothX
+  const smoothY = frameState.flowSmoothY
 
-    if (lockToTarget) {
-      sampleOut.x = targetX
-      sampleOut.y = targetY
+  for (let sourceIndex = 0; sourceIndex < count; sourceIndex += 1) {
+    const cellA = flowState.sourceCellByFrame[offsetA + sourceIndex]
+    const cellB = flowState.sourceCellByFrame[offsetB + sourceIndex]
+
+    const baseA = cellA * 4
+    const baseB = cellB * 4
+
+    const cellAX = grid.cellBounds?.[baseA] ?? 0
+    const cellAY = grid.cellBounds?.[baseA + 1] ?? 0
+    const cellAW = Math.max(1, grid.cellBounds?.[baseA + 2] ?? 1)
+    const cellAH = Math.max(1, grid.cellBounds?.[baseA + 3] ?? 1)
+
+    const cellBX = grid.cellBounds?.[baseB] ?? cellAX
+    const cellBY = grid.cellBounds?.[baseB + 1] ?? cellAY
+    const cellBW = Math.max(1, grid.cellBounds?.[baseB + 2] ?? cellAW)
+    const cellBH = Math.max(1, grid.cellBounds?.[baseB + 3] ?? cellAH)
+
+    const centerAX = cellAX + cellAW * 0.5
+    const centerAY = cellAY + cellAH * 0.5
+    const centerBX = cellBX + cellBW * 0.5
+    const centerBY = cellBY + cellBH * 0.5
+
+    const targetCenterX = centerAX + (centerBX - centerAX) * localT
+    const targetCenterY = centerAY + (centerBY - centerAY) * localT
+
+    if (resetSmoothing || forceTarget) {
+      smoothX[sourceIndex] = targetCenterX
+      smoothY[sourceIndex] = targetCenterY
     } else {
-      sampleGridFlowPosition(grid, sourceIndex, motionT, sampleOut)
-      sampleOut.x += (targetX - sampleOut.x) * settleBlend
-      sampleOut.y += (targetY - sampleOut.y) * settleBlend
+      const deltaX = targetCenterX - smoothX[sourceIndex]
+      const deltaY = targetCenterY - smoothY[sourceIndex]
+      const deltaLength = Math.hypot(deltaX, deltaY)
+
+      if (deltaLength > maxStepWorld) {
+        const ratio = maxStepWorld / deltaLength
+        smoothX[sourceIndex] += deltaX * ratio
+        smoothY[sourceIndex] += deltaY * ratio
+      } else {
+        smoothX[sourceIndex] = targetCenterX
+        smoothY[sourceIndex] = targetCenterY
+      }
     }
 
-    let motionDistance = 0
-    if (!lockToTarget) {
-      const previousT = Math.max(0, motionT - motionStep)
-      sampleGridFlowPosition(grid, sourceIndex, previousT, samplePrevOut)
-      const previousSettle = smoothstep(clamp((previousT - 0.76) / 0.24, 0, 1))
-      samplePrevOut.x += (targetX - samplePrevOut.x) * previousSettle
-      samplePrevOut.y += (targetY - samplePrevOut.y) * previousSettle
-      motionDistance = Math.hypot(sampleOut.x - samplePrevOut.x, sampleOut.y - samplePrevOut.y)
-    }
+    const centerX = smoothX[sourceIndex]
+    const centerY = smoothY[sourceIndex]
 
-    const motionOverlapWorld = Math.min(5 / Math.max(0.0001, scale), motionDistance * 0.7 * motionBoost)
-    const overlapWorld = overlapWorldBase + motionOverlapWorld
-    const strokeWidth = Math.max(
-      1,
-      overlapPxBase * 1.25 + Math.min(3.4, motionDistance * scale * 0.5 * motionBoost),
-    )
+    const overlapWorld = overlapPxBase / Math.max(0.0001, scale)
+    const strokeWidth = Math.max(1, overlapPxBase * 1.2)
 
-    const boundBase = sourceIndex * 4
-    const sourceWidth = grid.cellBounds?.[boundBase + 2] ?? 1
-    const sourceHeight = grid.cellBounds?.[boundBase + 3] ?? 1
-    const mappedTargetIndex = clamp(Number(grid.sourceToTarget?.[sourceIndex] ?? sourceIndex), 0, grid.count - 1)
-    const targetBoundBase = mappedTargetIndex * 4
-    const targetWidth = grid.cellBounds?.[targetBoundBase + 2] ?? sourceWidth
-    const targetHeight = grid.cellBounds?.[targetBoundBase + 3] ?? sourceHeight
+    const drawWidth = (Math.max(cellAW, cellBW) + overlapWorld * 2) * scale
+    const drawHeight = (Math.max(cellAH, cellBH) + overlapWorld * 2) * scale
+    const drawX = offsetX + centerX * scale - drawWidth * 0.5
+    const drawY = offsetY + centerY * scale - drawHeight * 0.5
 
-    const drawWidth = ((sourceWidth + (targetWidth - sourceWidth) * sizeProgress) + overlapWorld * 2) * scale
-    const drawHeight = ((sourceHeight + (targetHeight - sourceHeight) * sizeProgress) + overlapWorld * 2) * scale
-    const drawX = offsetX + sampleOut.x * scale - drawWidth * 0.5
-    const drawY = offsetY + sampleOut.y * scale - drawHeight * 0.5
-
-    ctx.fillStyle = renderData.fillStyles[localIndex]
+    ctx.fillStyle = flowState.fillStyles[sourceIndex]
     ctx.fillRect(drawX, drawY, drawWidth, drawHeight)
     ctx.lineWidth = strokeWidth
-    ctx.strokeStyle = renderData.fillStyles[localIndex]
+    ctx.strokeStyle = flowState.fillStyles[sourceIndex]
     ctx.strokeRect(drawX, drawY, drawWidth, drawHeight)
   }
+
+  frameState.flowSmoothInitialized = true
+  frameState.flowLastProgress = p
 }
 
 const expandPolygonForOverlap = (points, centerX, centerY, radialScale, overlapWorld) => {
