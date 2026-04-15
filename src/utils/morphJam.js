@@ -22,7 +22,7 @@ const resolveSeedDirection = (a, b, iteration) => {
 }
 
 export const resolveJamReveal = (progress) =>
-  smoothstep(clamp((Number(progress) - 0.015) / 0.26, 0, 1))
+  smoothstep(clamp(Number(progress) / 0.18, 0, 1))
 
 export const createJamRenderState = (grid, renderData) => {
   const count = Math.max(0, Math.round(Number(renderData?.count) || 0))
@@ -38,8 +38,8 @@ export const createJamRenderState = (grid, renderData) => {
     const sourceIndex = sourceIndices[localIndex]
     const base2 = sourceIndex * 2
 
-    targetX[localIndex] = Number(grid.targetPositions?.[base2]) || 0
-    targetY[localIndex] = Number(grid.targetPositions?.[base2 + 1]) || 0
+    targetX[localIndex] = Number(grid.finalSitePositions?.[base2] ?? grid.targetPositions?.[base2]) || 0
+    targetY[localIndex] = Number(grid.finalSitePositions?.[base2 + 1] ?? grid.targetPositions?.[base2 + 1]) || 0
     radii[localIndex] = resolveLocalRadius(grid, sourceIndex)
   }
 

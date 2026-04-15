@@ -26,8 +26,13 @@ export const sampleCellPosition = (grid, sourceIndex, progress, out = { x: 0, y:
   const frameCount = Math.max(1, grid.frameCount || 1)
   const allowFinalTarget = options?.allowFinalTarget !== false
   const finalBackoff = clamp(Number(options?.finalBackoff ?? 0), 0, 0.1)
-  const targetX = grid.targetPositions?.[base2] ?? 0
-  const targetY = grid.targetPositions?.[base2 + 1] ?? 0
+  const useFinalSitePositions = Boolean(options?.useFinalSitePositions && grid.finalSitePositions)
+  const targetX = useFinalSitePositions
+    ? (grid.finalSitePositions?.[base2] ?? grid.targetPositions?.[base2] ?? 0)
+    : (grid.targetPositions?.[base2] ?? 0)
+  const targetY = useFinalSitePositions
+    ? (grid.finalSitePositions?.[base2 + 1] ?? grid.targetPositions?.[base2 + 1] ?? 0)
+    : (grid.targetPositions?.[base2 + 1] ?? 0)
 
   let sampleProgress = p
 
@@ -57,6 +62,14 @@ export const sampleCellPosition = (grid, sourceIndex, progress, out = { x: 0, y:
 
   let x = grid.motionPath[indexA] + (grid.motionPath[indexB] - grid.motionPath[indexA]) * localT
   let y = grid.motionPath[indexA + 1] + (grid.motionPath[indexB + 1] - grid.motionPath[indexA + 1]) * localT
+
+  if (useFinalSitePositions) {
+    const finalSiteBlendStart = clamp(Number(options?.finalSiteBlendStart ?? 0.72), 0, 1)
+    const finalSiteBlendDuration = clamp(Number(options?.finalSiteBlendDuration ?? (1 - finalSiteBlendStart)), 0.001, 1)
+    const finalSiteBlend = smoothstep((sampleProgress - finalSiteBlendStart) / finalSiteBlendDuration)
+    x += (targetX - x) * finalSiteBlend
+    y += (targetY - y) * finalSiteBlend
+  }
 
   const settleStrength = clamp(Number(options?.settleStrength ?? 0), 0, 1)
   const settleStart = clamp(Number(options?.settleStart ?? 0.78), 0, 1)

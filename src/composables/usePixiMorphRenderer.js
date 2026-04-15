@@ -2,7 +2,11 @@ import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { Delaunay } from 'd3-delaunay'
 import { clamp, sampleCellPosition, smoothstep } from '../utils/morphPlayback'
 import { getMorphShapeBuffers, interpolateCellPolygon } from '../utils/morphPolygons'
-import { getVoronoiFrameSample, getVoronoiRenderData } from '../utils/morphVoronoi'
+import {
+  getTransportRenderState,
+  sampleTransportParticle,
+} from '../utils/morphTransport'
+import { getVoronoiFrameSample, getVoronoiRenderData, stabilizeVoronoiCoords } from '../utils/morphVoronoi'
 import { getGridFlowRenderState } from '../utils/gridFlow'
 import { createJamRenderState, sampleJamCenters } from '../utils/morphJam'
 import {
@@ -12,6 +16,7 @@ import {
   RENDERER_MODE_GRID_FLOW,
   RENDERER_MODE_JAM,
   RENDERER_MODE_POLYGON,
+  RENDERER_MODE_TRANSPORT,
   RENDERER_MODE_VORONOI,
 } from '../utils/renderModes'
 
@@ -19,24 +24,21 @@ const MIN_RENDER_CELL_BUDGET = 128
 const DEFAULT_PREVIEW_GRID_CELLS = 4200
 const DEFAULT_PREVIEW_POLYGON_CELLS = 3200
 const DEFAULT_PREVIEW_JAM_CELLS = 4200
+const DEFAULT_PREVIEW_TRANSPORT_CELLS = 5600
 const DEFAULT_PREVIEW_VORONOI_CELLS = 7200
 const DEFAULT_EXPORT_GRID_CELLS = 5200
 const DEFAULT_EXPORT_POLYGON_CELLS = 4200
 const DEFAULT_EXPORT_JAM_CELLS = 7600
+const DEFAULT_EXPORT_TRANSPORT_CELLS = 9200
 const DEFAULT_EXPORT_VORONOI_CELLS = 14000
 
 const resolveRevealProgress = (progress) =>
-  smoothstep(clamp((Number(progress) - 0.01) / 0.22, 0, 1))
+  smoothstep(clamp(Number(progress) / 0.18, 0, 1))
 
 const resolveGridFlowMotionProgress = (progress, sourceOverlayActive) => {
   const p = clamp(Number(progress) || 0, 0, 1)
   if (!sourceOverlayActive) return p
-
-  // Start swapping only after source overlay has finished fading.
-  const motionStart = 0.32
-  if (p <= motionStart) return 0
-
-  return clamp((p - motionStart) / (1 - motionStart), 0, 1)
+  return p
 }
 
 const resolveRevealHash = (sourceIndex) => {
@@ -114,6 +116,10 @@ const resolveDefaultCellBudget = (rendererMode, manualRender) => {
     return manualRender ? DEFAULT_EXPORT_JAM_CELLS : DEFAULT_PREVIEW_JAM_CELLS
   }
 
+  if (rendererMode === RENDERER_MODE_TRANSPORT) {
+    return manualRender ? DEFAULT_EXPORT_TRANSPORT_CELLS : DEFAULT_PREVIEW_TRANSPORT_CELLS
+  }
+
   return manualRender ? DEFAULT_EXPORT_VORONOI_CELLS : DEFAULT_PREVIEW_VORONOI_CELLS
 }
 
@@ -130,7 +136,7 @@ const resolveExplicitCellBudget = (rendererMode, manualRender, rawBudget) => {
   return resolveCellBudget(rendererMode, manualRender, rawBudget)
 }
 
-const resolveModeBudget = (grid, rendererMode, renderCellBudget) => {
+const resolveModeBudget = (grid, rendererMode, renderCellBudget, manualRender) => {
   const totalCount = Number(grid?.count) || 0
   if (!totalCount) return 0
 
@@ -138,6 +144,7 @@ const resolveModeBudget = (grid, rendererMode, renderCellBudget) => {
     rendererMode === RENDERER_MODE_GRID
     || rendererMode === RENDERER_MODE_GRID_FLOW
     || rendererMode === RENDERER_MODE_POLYGON
+    || rendererMode === RENDERER_MODE_TRANSPORT
   ) {
     return totalCount
   }
@@ -197,14 +204,16 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
   root.addChild(content)
   app.stage.addChild(root)
 
-  const sampleOut = { x: 0, y: 0 }
-  const polygonPoints = new Float32Array(8)
+  const sampleOut = { x: 0, y: 0, width: 0, height: 0, angle: 0 }
+  const polygonPoints = new Float32Array(32)
 
   let renderData = null
   let shapeBuffers = null
   let gridFlowState = null
   let jamState = null
   let jamCoords = null
+  let transportState = null
+  let transportCoords = null
   let flowSmoothX = null
   let flowSmoothY = null
   let flowSmoothInitialized = false
@@ -251,6 +260,8 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     gridFlowState = null
     jamState = null
     jamCoords = null
+    transportState = null
+    transportCoords = null
     flowSmoothX = null
     flowSmoothY = null
     flowSmoothInitialized = false
@@ -596,6 +607,62 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     }
   }
 
+  const drawTransport = (p) => {
+    if (!renderData?.count || !transportState?.count || !transportCoords) {
+      polygonLayer.clear()
+      return
+    }
+
+    const revealProgress = resolveEffectiveRevealProgress(p)
+
+    for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
+      sampleTransportParticle(transportState, p, localIndex, sampleOut)
+      const coordsBase = localIndex * 2
+      transportCoords[coordsBase] = clamp(sampleOut.x, 0, currentMorph.width)
+      transportCoords[coordsBase + 1] = clamp(sampleOut.y, 0, currentMorph.height)
+    }
+
+    stabilizeVoronoiCoords(transportCoords, currentMorph.width, currentMorph.height)
+
+    const delaunay = new Delaunay(transportCoords)
+    const voronoi = delaunay.voronoi([0, 0, currentMorph.width, currentMorph.height])
+
+    polygonLayer.clear()
+
+    for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
+      const sourceIndex = renderData.indices[localIndex]
+      if (!isSourceRevealed(sourceIndex, revealProgress)) continue
+
+      const polygon = voronoi.cellPolygon(localIndex)
+      if (!polygon || polygon.length < 3) continue
+
+      const [startX, startY] = polygon[0]
+      if (!Number.isFinite(startX) || !Number.isFinite(startY)) continue
+
+      let valid = true
+      for (let pointIndex = 1; pointIndex < polygon.length; pointIndex += 1) {
+        const [px, py] = polygon[pointIndex]
+        if (!Number.isFinite(px) || !Number.isFinite(py)) {
+          valid = false
+          break
+        }
+      }
+      if (!valid) continue
+
+      polygonLayer.moveTo(startX, startY)
+
+      for (let pointIndex = 1; pointIndex < polygon.length; pointIndex += 1) {
+        const [px, py] = polygon[pointIndex]
+        polygonLayer.lineTo(px, py)
+      }
+
+      polygonLayer.closePath().fill({
+        color: renderData.colors[localIndex],
+        alpha: renderData.alphas[localIndex],
+      })
+    }
+  }
+
   const drawVoronoiMesh = (offsets, points, progress) => {
     if (!renderData?.count) {
       polygonLayer.clear()
@@ -638,12 +705,18 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
     for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
       const sourceIndex = renderData.indices[localIndex]
 
-      sampleCellPosition(currentMorph.grid, sourceIndex, p, sampleOut)
+      sampleCellPosition(currentMorph.grid, sourceIndex, p, sampleOut, {
+        useFinalSitePositions: true,
+        finalSiteBlendStart: 0.72,
+        finalSiteBlendDuration: 0.24,
+      })
 
       const coordsBase = localIndex * 2
       voronoiCoords[coordsBase] = clamp(sampleOut.x, 0, currentMorph.width)
       voronoiCoords[coordsBase + 1] = clamp(sampleOut.y, 0, currentMorph.height)
     }
+
+    stabilizeVoronoiCoords(voronoiCoords, currentMorph.width, currentMorph.height)
 
     const delaunay = new Delaunay(voronoiCoords)
     const voronoi = delaunay.voronoi([0, 0, currentMorph.width, currentMorph.height])
@@ -833,6 +906,13 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
+    if (rendererMode === RENDERER_MODE_TRANSPORT) {
+      drawTransport(p)
+      currentProgress = p
+      renderFrame()
+      return
+    }
+
     if (requestWorkerFrame(p)) {
       currentProgress = p
       renderFrame()
@@ -854,7 +934,7 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       return
     }
 
-    const defaultModeBudget = resolveModeBudget(currentMorph.grid, rendererMode, renderCellBudget)
+    const defaultModeBudget = resolveModeBudget(currentMorph.grid, rendererMode, renderCellBudget, manualRender)
     const modeBudget = rendererMode === RENDERER_MODE_JAM
       ? Math.min(
         Number(currentMorph.grid.count) || 0,
@@ -873,6 +953,12 @@ export const createPixiMorphRenderer = async (host, options = {}) => {
       ? createJamRenderState(currentMorph.grid, renderData)
       : null
     jamCoords = rendererMode === RENDERER_MODE_JAM
+      ? new Float64Array(renderData.count * 2)
+      : null
+    transportState = rendererMode === RENDERER_MODE_TRANSPORT
+      ? getTransportRenderState(currentMorph.grid, renderData)
+      : null
+    transportCoords = rendererMode === RENDERER_MODE_TRANSPORT
       ? new Float64Array(renderData.count * 2)
       : null
     flowSmoothX = gridFlowState ? new Float32Array(gridFlowState.count) : null

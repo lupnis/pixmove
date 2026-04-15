@@ -91,21 +91,11 @@ function nextRandom(): f64 {
   return <f64>((t ^ (t >>> 14)) >>> 0) / 4294967296.0
 }
 
-function colorDistanceSq(sourceColorsPtr: usize, targetColorsPtr: usize, sourceIndex: i32, targetIndex: i32): i32 {
-  const sourceBase = colorOffset(sourceColorsPtr, sourceIndex)
-  const targetBase = colorOffset(targetColorsPtr, targetIndex)
-
-  const dr = <i32>load<u8>(sourceBase) - <i32>load<u8>(targetBase)
-  const dg = <i32>load<u8>(sourceBase + 1) - <i32>load<u8>(targetBase + 1)
-  const db = <i32>load<u8>(sourceBase + 2) - <i32>load<u8>(targetBase + 2)
-
-  return dr * dr + dg * dg + db * db
-}
-
 function calcHeuristic(
-  sourceColorsPtr: usize,
-  targetColorsPtr: usize,
-  targetWeightsPtr: usize,
+  sourceBrightnessPtr: usize,
+  sourceFrequencyPtr: usize,
+  targetBrightnessPtr: usize,
+  targetFrequencyPtr: usize,
   sourceIndex: i32,
   targetIndex: i32,
   gridWidth: i32,
@@ -115,18 +105,26 @@ function calcHeuristic(
   const dx = <f64>((targetIndex % gridWidth) - (sourceIndex % gridWidth))
   const dy = <f64>((targetIndex / gridWidth) - (sourceIndex / gridWidth))
   const spatial = dx * dx + dy * dy
-  const color = <f64>colorDistanceSq(sourceColorsPtr, targetColorsPtr, sourceIndex, targetIndex)
-  const weight = <f64>load<f32>(scalarF32Offset(targetWeightsPtr, targetIndex))
-  const spatialWeight = <f64>proximityFactor / <f64>maxI32(gridWidth, gridHeight)
-  const spatialCost = spatial * spatialWeight
+  const maxDim = <f64>maxI32(gridWidth, gridHeight)
+  const brightness = Math.abs(
+    <f64>load<f32>(scalarF32Offset(sourceBrightnessPtr, sourceIndex))
+    - <f64>load<f32>(scalarF32Offset(targetBrightnessPtr, targetIndex)),
+  )
+  const frequency = Math.abs(
+    <f64>load<f32>(scalarF32Offset(sourceFrequencyPtr, sourceIndex))
+    - <f64>load<f32>(scalarF32Offset(targetFrequencyPtr, targetIndex)),
+  )
+  const gamma = 0.04 + <f64>proximityFactor * 0.014
+  const distance = spatial / Math.max(1.0, maxDim * maxDim)
 
-  return color * weight + spatialCost * spatialCost
+  return <f64>brightness + <f64>frequency + distance * gamma
 }
 
 export function initAssignments(
-  sourceColorsPtr: usize,
-  targetColorsPtr: usize,
-  targetWeightsPtr: usize,
+  sourceBrightnessPtr: usize,
+  sourceFrequencyPtr: usize,
+  targetBrightnessPtr: usize,
+  targetFrequencyPtr: usize,
   targetToSourcePtr: usize,
   heuristicsPtr: usize,
   gridWidth: i32,
@@ -139,9 +137,10 @@ export function initAssignments(
     store<f64>(
       scalarF64Offset(heuristicsPtr, index),
       calcHeuristic(
-        sourceColorsPtr,
-        targetColorsPtr,
-        targetWeightsPtr,
+        sourceBrightnessPtr,
+        sourceFrequencyPtr,
+        targetBrightnessPtr,
+        targetFrequencyPtr,
         index,
         index,
         gridWidth,
@@ -155,9 +154,10 @@ export function initAssignments(
 }
 
 export function stepAssignments(
-  sourceColorsPtr: usize,
-  targetColorsPtr: usize,
-  targetWeightsPtr: usize,
+  sourceBrightnessPtr: usize,
+  sourceFrequencyPtr: usize,
+  targetBrightnessPtr: usize,
+  targetFrequencyPtr: usize,
   targetToSourcePtr: usize,
   heuristicsPtr: usize,
   gridWidth: i32,
@@ -187,9 +187,10 @@ export function stepAssignments(
       + load<f64>(scalarF64Offset(heuristicsPtr, bPos))
 
     const nextA = calcHeuristic(
-      sourceColorsPtr,
-      targetColorsPtr,
-      targetWeightsPtr,
+      sourceBrightnessPtr,
+      sourceFrequencyPtr,
+      targetBrightnessPtr,
+      targetFrequencyPtr,
       sourceB,
       aPos,
       gridWidth,
@@ -197,9 +198,10 @@ export function stepAssignments(
       proximityFactor,
     )
     const nextB = calcHeuristic(
-      sourceColorsPtr,
-      targetColorsPtr,
-      targetWeightsPtr,
+      sourceBrightnessPtr,
+      sourceFrequencyPtr,
+      targetBrightnessPtr,
+      targetFrequencyPtr,
       sourceA,
       bPos,
       gridWidth,
@@ -231,9 +233,10 @@ export function finalizeAssignments(
 }
 
 export function computeAssignments(
-  sourceColorsPtr: usize,
-  targetColorsPtr: usize,
-  targetWeightsPtr: usize,
+  sourceBrightnessPtr: usize,
+  sourceFrequencyPtr: usize,
+  targetBrightnessPtr: usize,
+  targetFrequencyPtr: usize,
   targetToSourcePtr: usize,
   sourceToTargetPtr: usize,
   heuristicsPtr: usize,
@@ -246,9 +249,10 @@ export function computeAssignments(
   swapsPerGeneration: i32,
 ): void {
   initAssignments(
-    sourceColorsPtr,
-    targetColorsPtr,
-    targetWeightsPtr,
+    sourceBrightnessPtr,
+    sourceFrequencyPtr,
+    targetBrightnessPtr,
+    targetFrequencyPtr,
     targetToSourcePtr,
     heuristicsPtr,
     gridWidth,
@@ -263,9 +267,10 @@ export function computeAssignments(
 
   for (let generation = 0; generation < maxGenerations; generation += 1) {
     const swapsMade = stepAssignments(
-      sourceColorsPtr,
-      targetColorsPtr,
-      targetWeightsPtr,
+      sourceBrightnessPtr,
+      sourceFrequencyPtr,
+      targetBrightnessPtr,
+      targetFrequencyPtr,
       targetToSourcePtr,
       heuristicsPtr,
       gridWidth,
@@ -347,9 +352,9 @@ export function simulateMotionFrames(
   const pixelSize: f32 = Mathf.min(cellWidth, cellHeight)
   const personalSpace: f32 = pixelSize * <f32>0.95
   const wallLimit: f32 = personalSpace * <f32>0.5
-  const maxVelocity: f32 = clampF32(pixelSize * <f32>0.78, <f32>1.1, <f32>6.0)
-  const maxAcceleration: f32 = clampF32(pixelSize * <f32>0.95, <f32>0.4, <f32>3.2)
-  const destinationForceScale: f32 = clampF32(pixelSize / <f32>8.0, <f32>0.35, <f32>1.0)
+  const maxVelocity: f32 = clampF32(pixelSize * <f32>0.62, <f32>0.9, <f32>4.6)
+  const maxAcceleration: f32 = clampF32(pixelSize * <f32>0.62, <f32>0.28, <f32>2.1)
+  const destinationForceScale: f32 = clampF32(pixelSize / <f32>14.0, <f32>0.12, <f32>0.42)
   const alignmentFactor: f32 = 0.8
   const sideLength: f32 = Mathf.max(<f32>1.0, Mathf.max(width, height))
 
@@ -390,7 +395,7 @@ export function simulateMotionFrames(
         }
 
         const elapsed: f32 = <f32>load<u16>(agesPtr + (<usize>index << 1)) / 60.0
-        const factor: f32 = Mathf.min(Mathf.pow(elapsed * <f32>0.13, <f32>3.0), 1000.0)
+        const factor: f32 = clampF32(<f32>0.01 + elapsed * <f32>0.0035, <f32>0.01, <f32>0.038)
         const dx: f32 = load<f32>(targetPtr) - x
         const dy: f32 = load<f32>(targetPtr + 4) - y
         const dist: f32 = Mathf.sqrt(dx * dx + dy * dy)
@@ -477,8 +482,8 @@ export function simulateMotionFrames(
         const accPtr = pairOffset(accelerationsPtr, index)
         const agePtr = agesPtr + (<usize>index << 1)
 
-        const nextVX = clampF32((load<f32>(velPtr) + load<f32>(accPtr)) * <f32>0.97, -maxVelocity, maxVelocity)
-        const nextVY = clampF32((load<f32>(velPtr + 4) + load<f32>(accPtr + 4)) * <f32>0.97, -maxVelocity, maxVelocity)
+        const nextVX = clampF32((load<f32>(velPtr) + load<f32>(accPtr)) * <f32>0.94, -maxVelocity, maxVelocity)
+        const nextVY = clampF32((load<f32>(velPtr + 4) + load<f32>(accPtr + 4)) * <f32>0.94, -maxVelocity, maxVelocity)
 
         store<f32>(velPtr, nextVX)
         store<f32>(velPtr + 4, nextVY)

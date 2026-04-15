@@ -59,7 +59,7 @@ const props = defineProps({
   },
   rendererMode: {
     type: String,
-    default: 'voronoi',
+    default: 'transport',
   },
   sourceOverlayEnabled: {
     type: Boolean,

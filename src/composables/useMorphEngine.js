@@ -1,7 +1,8 @@
 import { Delaunay } from 'd3-delaunay'
 import { clamp, sampleCellPosition, smoothstep } from '../utils/morphPlayback'
 import { getMorphShapeBuffers, interpolateCellPolygon } from '../utils/morphPolygons'
-import { getVoronoiRenderData } from '../utils/morphVoronoi'
+import { getTransportRenderState, sampleTransportParticle } from '../utils/morphTransport'
+import { getVoronoiRenderData, stabilizeVoronoiCoords } from '../utils/morphVoronoi'
 import { getGridFlowRenderState } from '../utils/gridFlow'
 import { createJamRenderState, sampleJamCenters } from '../utils/morphJam'
 import {
@@ -11,6 +12,7 @@ import {
   RENDERER_MODE_GRID_FLOW,
   RENDERER_MODE_JAM,
   RENDERER_MODE_POLYGON,
+  RENDERER_MODE_TRANSPORT,
   RENDERER_MODE_VORONOI,
 } from '../utils/renderModes'
 
@@ -21,6 +23,7 @@ export {
   RENDERER_MODE_GRID_FLOW,
   RENDERER_MODE_JAM,
   RENDERER_MODE_POLYGON,
+  RENDERER_MODE_TRANSPORT,
   RENDERER_MODE_VORONOI,
 } from '../utils/renderModes'
 
@@ -33,6 +36,7 @@ const MIN_RENDER_CELL_BUDGET = 128
 const DEFAULT_GRID_CELL_BUDGET = 4200
 const DEFAULT_POLYGON_CELL_BUDGET = 3200
 const DEFAULT_JAM_CELL_BUDGET = 4800
+const DEFAULT_TRANSPORT_CELL_BUDGET = 5600
 const DEFAULT_VORONOI_CELL_BUDGET = 7200
 
 const renderFrameStateCache = new WeakMap()
@@ -231,17 +235,12 @@ const interpolateColor = (start, end, t) => ({
 })
 
 const resolveRevealProgress = (progress) =>
-  smoothstep(clamp((Number(progress) - 0.01) / 0.22, 0, 1))
+  smoothstep(clamp(Number(progress) / 0.18, 0, 1))
 
 const resolveGridFlowMotionProgress = (progress, sourceOverlayActive) => {
   const p = clamp(Number(progress) || 0, 0, 1)
   if (!sourceOverlayActive) return p
-
-  // Keep grid-flow blocks static until source overlay has fully faded out.
-  const motionStart = 0.32
-  if (p <= motionStart) return 0
-
-  return clamp((p - motionStart) / (1 - motionStart), 0, 1)
+  return p
 }
 
 const resolveSourceOverlayAlpha = (progress) => {
@@ -268,6 +267,7 @@ const resolveDefaultRenderBudget = (rendererMode) => {
   if (rendererMode === RENDERER_MODE_GRID || rendererMode === RENDERER_MODE_GRID_FLOW) return DEFAULT_GRID_CELL_BUDGET
   if (rendererMode === RENDERER_MODE_POLYGON) return DEFAULT_POLYGON_CELL_BUDGET
   if (rendererMode === RENDERER_MODE_JAM) return DEFAULT_JAM_CELL_BUDGET
+  if (rendererMode === RENDERER_MODE_TRANSPORT) return DEFAULT_TRANSPORT_CELL_BUDGET
   return DEFAULT_VORONOI_CELL_BUDGET
 }
 
@@ -289,6 +289,7 @@ const resolveModeBudget = (grid, rendererMode, renderCellBudget) => {
     normalizedMode === RENDERER_MODE_GRID
     || normalizedMode === RENDERER_MODE_GRID_FLOW
     || normalizedMode === RENDERER_MODE_POLYGON
+    || normalizedMode === RENDERER_MODE_TRANSPORT
   ) {
     return totalCount
   }
@@ -315,9 +316,10 @@ const getRenderFrameState = (grid, rendererMode, maxCells) => {
       },
       shapeBuffers: null,
       gridFlowState: null,
-      jamState: null,
+    jamState: null,
+      transportState: null,
       coords: new Float64Array(0),
-      polygonPoints: new Float32Array(8),
+      polygonPoints: new Float32Array(32),
       sampleOut: { x: 0, y: 0 },
     }
   }
@@ -344,13 +346,14 @@ const getRenderFrameState = (grid, rendererMode, maxCells) => {
     shapeBuffers: normalizedMode === RENDERER_MODE_POLYGON ? getMorphShapeBuffers(grid) : null,
     gridFlowState,
     jamState,
+    transportState: normalizedMode === RENDERER_MODE_TRANSPORT ? getTransportRenderState(grid, renderData) : null,
     flowSmoothX: gridFlowState ? new Float32Array(gridFlowState.count) : null,
     flowSmoothY: gridFlowState ? new Float32Array(gridFlowState.count) : null,
     flowSmoothInitialized: false,
     flowLastProgress: -1,
     coords: new Float64Array(renderData.count * 2),
-    polygonPoints: new Float32Array(8),
-    sampleOut: { x: 0, y: 0 },
+    polygonPoints: new Float32Array(32),
+    sampleOut: { x: 0, y: 0, width: 0, height: 0, angle: 0 },
   }
 
   cacheByBudget.set(cacheKey, state)
@@ -806,18 +809,74 @@ const drawJamCells = (ctx, frameState, grid, width, height, p, scale, offsetX, o
   ctx.miterLimit = prevMiterLimit
 }
 
+const drawTransportParticles = (ctx, frameState, width, height, progress, scale, offsetX, offsetY, revealProgress = 1) => {
+  const { renderData, transportState, coords, sampleOut } = frameState
+  if (!transportState?.count || !renderData?.count) return
+
+  for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
+    sampleTransportParticle(transportState, progress, localIndex, sampleOut)
+    const coordBase = localIndex * 2
+    coords[coordBase] = clamp(sampleOut.x, 0, width)
+    coords[coordBase + 1] = clamp(sampleOut.y, 0, height)
+  }
+
+  stabilizeVoronoiCoords(coords, width, height)
+
+  const delaunay = new Delaunay(coords)
+  const voronoi = delaunay.voronoi([0, 0, width, height])
+
+  for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
+    const sourceIndex = renderData.indices[localIndex]
+    if (!isSourceRevealed(sourceIndex, revealProgress)) continue
+
+    const polygon = voronoi.cellPolygon(localIndex)
+    if (!polygon || polygon.length < 3) continue
+
+    const [startX, startY] = polygon[0]
+    if (!Number.isFinite(startX) || !Number.isFinite(startY)) continue
+
+    let valid = true
+    for (let pointIndex = 1; pointIndex < polygon.length; pointIndex += 1) {
+      const [px, py] = polygon[pointIndex]
+      if (!Number.isFinite(px) || !Number.isFinite(py)) {
+        valid = false
+        break
+      }
+    }
+    if (!valid) continue
+
+    ctx.beginPath()
+    ctx.moveTo(offsetX + startX * scale, offsetY + startY * scale)
+
+    for (let pointIndex = 1; pointIndex < polygon.length; pointIndex += 1) {
+      const [px, py] = polygon[pointIndex]
+      ctx.lineTo(offsetX + px * scale, offsetY + py * scale)
+    }
+
+    ctx.closePath()
+    ctx.fillStyle = renderData.fillStyles[localIndex]
+    ctx.fill()
+  }
+}
+
 const drawVoronoiCells = (ctx, frameState, grid, width, height, p, scale, offsetX, offsetY, revealProgress = 1) => {
   const { renderData, coords, sampleOut } = frameState
 
   for (let localIndex = 0; localIndex < renderData.count; localIndex += 1) {
     const sourceIndex = renderData.indices[localIndex]
 
-    sampleCellPosition(grid, sourceIndex, p, sampleOut)
+    sampleCellPosition(grid, sourceIndex, p, sampleOut, {
+      useFinalSitePositions: true,
+      finalSiteBlendStart: 0.72,
+      finalSiteBlendDuration: 0.24,
+    })
 
     const coordBase = localIndex * 2
     coords[coordBase] = clamp(sampleOut.x, 0, width)
     coords[coordBase + 1] = clamp(sampleOut.y, 0, height)
   }
+
+  stabilizeVoronoiCoords(coords, width, height)
 
   const delaunay = new Delaunay(coords)
   const voronoi = delaunay.voronoi([0, 0, width, height])
@@ -959,6 +1018,21 @@ export const drawMorphFrame = (ctx, morphData, progress, options = {}) => {
 
   if (rendererMode === RENDERER_MODE_POLYGON) {
     drawPolygonCells(ctx, frameState, grid, p, scale, offsetX, offsetY, revealProgress)
+    return
+  }
+
+  if (rendererMode === RENDERER_MODE_TRANSPORT) {
+    drawTransportParticles(
+      ctx,
+      frameState,
+      morphData.width,
+      morphData.height,
+      p,
+      scale,
+      offsetX,
+      offsetY,
+      revealProgress,
+    )
     return
   }
 

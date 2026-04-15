@@ -42,7 +42,7 @@ const toFinite = (value, fallback = 0) => {
 }
 
 export const makeDefaultKeyframes = () => [
-  { id: uid(), time: 0, value: 0, easeToNext: 'inOutSine', locked: true },
+  { id: uid(), time: 0, value: 0, easeToNext: 'linear', locked: true },
   { id: uid(), time: 1, value: 1, easeToNext: 'linear', locked: true },
 ]
 
@@ -72,6 +72,15 @@ export const normalizeKeyframes = (frames) => {
   normalized[normalized.length - 1].time = 1
   normalized[normalized.length - 1].value = 1
   normalized[normalized.length - 1].locked = true
+
+  if (
+    normalized.length === 2
+    && normalized[0].locked
+    && normalized[1].locked
+    && normalized[0].easeToNext === 'inOutSine'
+  ) {
+    normalized[0].easeToNext = 'linear'
+  }
 
   for (let i = 1; i < normalized.length - 1; i += 1) {
     const prev = normalized[i - 1]

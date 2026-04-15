@@ -1,4 +1,4 @@
-export const fallbackLocale = 'en'
+﻿export const fallbackLocale = 'en'
 
 export const messages = {
   'zh-CN': {
@@ -438,6 +438,7 @@ export const messages = {
         grid_flow: 'Grid Occupancy Swap',
         jam: 'Jam',
         polygon: 'Polygon',
+        transport: 'Transport',
         voronoi: 'Voronoi',
       },
       toneGroupAria: 'Component colors',

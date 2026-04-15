@@ -40,9 +40,10 @@ const allocBytes = (memory, alloc, size) => ({
 })
 
 export const createAssignmentsWasmRunner = async (
-  sourceColors,
-  targetColors,
-  targetWeights,
+  sourceBrightness,
+  sourceFrequency,
+  targetBrightness,
+  targetFrequency,
   columns,
   rows,
   proximityFactor,
@@ -54,21 +55,35 @@ export const createAssignmentsWasmRunner = async (
 
   wasm.resetHeap()
 
-  const sourceColorsPtr = writeBytes(wasm.memory, wasm.alloc, sourceColors)
-  const targetColorsPtr = writeBytes(wasm.memory, wasm.alloc, targetColors)
-  const targetWeightsPtr = writeBytes(
+  const sourceBrightnessPtr = writeBytes(
     wasm.memory,
     wasm.alloc,
-    new Uint8Array(targetWeights.buffer, targetWeights.byteOffset, targetWeights.byteLength),
+    new Uint8Array(sourceBrightness.buffer, sourceBrightness.byteOffset, sourceBrightness.byteLength),
+  )
+  const sourceFrequencyPtr = writeBytes(
+    wasm.memory,
+    wasm.alloc,
+    new Uint8Array(sourceFrequency.buffer, sourceFrequency.byteOffset, sourceFrequency.byteLength),
+  )
+  const targetBrightnessPtr = writeBytes(
+    wasm.memory,
+    wasm.alloc,
+    new Uint8Array(targetBrightness.buffer, targetBrightness.byteOffset, targetBrightness.byteLength),
+  )
+  const targetFrequencyPtr = writeBytes(
+    wasm.memory,
+    wasm.alloc,
+    new Uint8Array(targetFrequency.buffer, targetFrequency.byteOffset, targetFrequency.byteLength),
   )
   const targetToSourcePtr = allocBytes(wasm.memory, wasm.alloc, count * 4).ptr
   const sourceToTargetPtr = allocBytes(wasm.memory, wasm.alloc, count * 4).ptr
   const heuristicsPtr = allocBytes(wasm.memory, wasm.alloc, count * 8).ptr
 
   wasm.initAssignments(
-    sourceColorsPtr,
-    targetColorsPtr,
-    targetWeightsPtr,
+    sourceBrightnessPtr,
+    sourceFrequencyPtr,
+    targetBrightnessPtr,
+    targetFrequencyPtr,
     targetToSourcePtr,
     heuristicsPtr,
     columns,
@@ -92,9 +107,10 @@ export const createAssignmentsWasmRunner = async (
       for (let step = 0; step < iterations && !done && generation < maxGenerations; step += 1) {
         const distance = Math.max(2, Math.round(maxDistance))
         swapsMade = wasm.stepAssignments(
-          sourceColorsPtr,
-          targetColorsPtr,
-          targetWeightsPtr,
+          sourceBrightnessPtr,
+          sourceFrequencyPtr,
+          targetBrightnessPtr,
+          targetFrequencyPtr,
           targetToSourcePtr,
           heuristicsPtr,
           columns,

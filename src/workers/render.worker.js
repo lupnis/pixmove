@@ -1,13 +1,14 @@
 import { Delaunay } from 'd3-delaunay'
+import { stabilizeVoronoiCoords } from '../utils/morphVoronoi'
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 const smoothstep = (t) => {
   const value = clamp(t, 0, 1)
   return value * value * (3 - 2 * value)
 }
-const VORONOI_SETTLE_START = 0.9
-const VORONOI_SETTLE_DURATION = 0.1
-const VORONOI_SETTLE_STRENGTH = 0
+const VORONOI_SETTLE_START = 0.72
+const VORONOI_SETTLE_DURATION = 0.24
+const VORONOI_SETTLE_STRENGTH = 0.92
 const VORONOI_FINAL_BACKOFF = 0
 const VORONOI_TAIL_ADJUST_START = 0.9
 const VORONOI_TAIL_ADJUST_DURATION = 0.1
@@ -154,6 +155,8 @@ const buildVoronoiMesh = (progress) => {
     coords[base2] = clamp(point[0], 0, state.width)
     coords[base2 + 1] = clamp(point[1], 0, state.height)
   }
+
+  stabilizeVoronoiCoords(coords, state.width, state.height)
 
   const delaunay = new Delaunay(coords)
   const voronoi = delaunay.voronoi([0, 0, state.width, state.height])

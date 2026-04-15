@@ -1,6 +1,8 @@
 const MIN_ALPHA = 0.18
 const MIN_VORONOI_BUDGET = 128
 const DEFAULT_VORONOI_BUDGET = 2600
+const TARGET_FEATURE_BIAS = 0.28
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 
 const EMPTY_RENDER_DATA = {
 	count: 0,
@@ -49,7 +51,7 @@ const resolveGridDimensions = (grid, count) => {
 	return { columns, rows }
 }
 
-const buildSampleIndices = (columns, rows, count, budget) => {
+const buildSourceStrideIndices = (columns, rows, count, budget) => {
 	if (!count || !columns || !rows) return new Uint32Array(0)
 
 	if (count <= budget) {
@@ -108,6 +110,149 @@ const buildSampleIndices = (columns, rows, count, budget) => {
 	return compact
 }
 
+const compactIndices = (indices, budget) => {
+	if (indices.length <= budget) {
+		return Uint32Array.from(indices)
+	}
+
+	const compact = new Uint32Array(budget)
+	const step = indices.length / budget
+	let cursor = 0
+
+	for (let i = 0; i < budget; i += 1) {
+		compact[i] = indices[Math.floor(cursor)]
+		cursor += step
+	}
+
+	return compact
+}
+
+const selectBestTargetIndexInWindow = (x0, y0, x1, y1, columns, rows, weights) => {
+	let bestIndex = y0 * columns + x0
+	let bestScore = Number.NEGATIVE_INFINITY
+	const centerX = (x0 + x1 - 1) * 0.5
+	const centerY = (y0 + y1 - 1) * 0.5
+
+	for (let y = y0; y < y1; y += 1) {
+		for (let x = x0; x < x1; x += 1) {
+			const index = y * columns + x
+			const dx = x - centerX
+			const dy = y - centerY
+			const centerPenalty = (dx * dx + dy * dy) * 0.028
+			const boundaryBonus = x === 0 || y === 0 || x === columns - 1 || y === rows - 1 ? 0.04 : 0
+			const featureWeight = weights?.[index] ?? 1
+			const score = featureWeight * (1 + TARGET_FEATURE_BIAS) - centerPenalty + boundaryBonus
+
+			if (score > bestScore) {
+				bestScore = score
+				bestIndex = index
+			}
+		}
+	}
+
+	return bestIndex
+}
+
+const buildTargetAnchoredSampleIndices = (grid, columns, rows, count, budget) => {
+	const targetToSource = grid?.targetToSource
+	if (!ArrayBuffer.isView(targetToSource)) {
+		return null
+	}
+	if (targetToSource.length < count) return null
+
+	const weights = grid?.targetWeights?.length >= count ? grid.targetWeights : null
+	const aspect = columns / Math.max(1, rows)
+	const windowColumns = clamp(Math.round(Math.sqrt(budget * aspect)), 1, columns)
+	const windowRows = clamp(Math.round(budget / windowColumns), 1, rows)
+	const sampled = []
+	const seen = new Set()
+
+	const pushTargetIndex = (targetIndex) => {
+		const clampedTarget = clampIndex(targetIndex, count)
+		const sourceIndex = clampIndex(targetToSource[clampedTarget], count)
+		if (seen.has(sourceIndex)) return
+		seen.add(sourceIndex)
+		sampled.push(sourceIndex)
+	}
+
+	for (let windowY = 0; windowY < windowRows; windowY += 1) {
+		const y0 = Math.floor((windowY * rows) / windowRows)
+		const y1 = Math.max(y0 + 1, Math.floor(((windowY + 1) * rows) / windowRows))
+
+		for (let windowX = 0; windowX < windowColumns; windowX += 1) {
+			const x0 = Math.floor((windowX * columns) / windowColumns)
+			const x1 = Math.max(x0 + 1, Math.floor(((windowX + 1) * columns) / windowColumns))
+			const targetIndex = selectBestTargetIndexInWindow(x0, y0, x1, y1, columns, rows, weights)
+			pushTargetIndex(targetIndex)
+		}
+	}
+
+	if (sampled.length < budget) {
+		const totalTargets = columns * rows
+		const fallbackStep = Math.max(1, Math.floor(totalTargets / Math.max(1, budget - sampled.length)))
+		for (let targetIndex = 0; targetIndex < totalTargets && sampled.length < budget; targetIndex += fallbackStep) {
+			pushTargetIndex(targetIndex)
+		}
+	}
+
+	return compactIndices(sampled, budget)
+}
+
+const buildSampleIndices = (grid, columns, rows, count, budget) => {
+	if (!count || !columns || !rows) return new Uint32Array(0)
+
+	if (count <= budget) {
+		const all = new Uint32Array(count)
+		for (let i = 0; i < count; i += 1) {
+			all[i] = i
+		}
+		return all
+	}
+
+	const targetAnchored = buildTargetAnchoredSampleIndices(grid, columns, rows, count, budget)
+	if (targetAnchored?.length) {
+		return targetAnchored
+	}
+
+	return buildSourceStrideIndices(columns, rows, count, budget)
+}
+
+export const stabilizeVoronoiCoords = (coords, width, height) => {
+	if (!coords?.length) return coords
+
+	const safeWidth = Math.max(1, Number(width) || 1)
+	const safeHeight = Math.max(1, Number(height) || 1)
+	const count = Math.floor(coords.length / 2)
+	const bucketSize = Math.max(
+		0.75,
+		Math.min(safeWidth, safeHeight) / Math.max(48, Math.sqrt(Math.max(1, count))),
+	)
+	const buckets = new Map()
+
+	for (let index = 0; index < count; index += 1) {
+		const base = index * 2
+		let x = clamp(Number(coords[base]) || 0, 0, safeWidth)
+		let y = clamp(Number(coords[base + 1]) || 0, 0, safeHeight)
+		const bucketX = Math.round(x / bucketSize)
+		const bucketY = Math.round(y / bucketSize)
+		const key = `${bucketX}:${bucketY}`
+		const seen = buckets.get(key) || 0
+
+		if (seen > 0) {
+			const angle = (index + 1) * GOLDEN_ANGLE
+			const radius = Math.min(bucketSize * 0.34, 0.36 + seen * 0.18)
+			x = clamp(x + Math.cos(angle) * radius, 0, safeWidth)
+			y = clamp(y + Math.sin(angle) * radius, 0, safeHeight)
+		}
+
+		buckets.set(key, seen + 1)
+		coords[base] = x
+		coords[base + 1] = y
+	}
+
+	return coords
+}
+
 const getBudgetCache = (store, grid) => {
 	let cacheByBudget = store.get(grid)
 
@@ -131,7 +276,7 @@ export const getVoronoiRenderData = (grid, maxCells) => {
 		return cacheByBudget.get(budget)
 	}
 
-	const indices = buildSampleIndices(columns, rows, totalCount, budget)
+	const indices = buildSampleIndices(grid, columns, rows, totalCount, budget)
 	const count = indices.length
 	const colors = new Uint32Array(count)
 	const alphas = new Float32Array(count)
@@ -189,8 +334,8 @@ export const getVoronoiFrameSample = (grid, maxCells) => {
 
 		sourcePositions[localBase2] = grid.sourcePositions?.[sourceBase2] ?? 0
 		sourcePositions[localBase2 + 1] = grid.sourcePositions?.[sourceBase2 + 1] ?? 0
-		targetPositions[localBase2] = grid.targetPositions?.[sourceBase2] ?? 0
-		targetPositions[localBase2 + 1] = grid.targetPositions?.[sourceBase2 + 1] ?? 0
+		targetPositions[localBase2] = grid.finalSitePositions?.[sourceBase2] ?? grid.targetPositions?.[sourceBase2] ?? 0
+		targetPositions[localBase2 + 1] = grid.finalSitePositions?.[sourceBase2 + 1] ?? grid.targetPositions?.[sourceBase2 + 1] ?? 0
 
 		for (let frame = 0; frame < frameCount; frame += 1) {
 			const srcMotionBase = (frame * totalCount + sourceIndex) * 2
